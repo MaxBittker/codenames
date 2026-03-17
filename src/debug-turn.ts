@@ -10,6 +10,43 @@ import type { GuessResult } from "./types.js";
 const model = createModelFromEnv();
 const apiKey = process.env.LLM_API_KEY;
 
+function subscribeAgent(agent: any, label: string) {
+  let inThinking = false;
+
+  agent.subscribe((e: any) => {
+    if (e.type === "message_update") {
+      const ae = e.assistantMessageEvent;
+      if (ae.type === "thinking_delta") {
+        if (!inThinking) {
+          process.stdout.write("\x1b[2m"); // dim
+          inThinking = true;
+        }
+        process.stdout.write(ae.delta);
+      } else if (ae.type === "text_delta") {
+        if (inThinking) {
+          process.stdout.write("\x1b[0m\n"); // reset
+          inThinking = false;
+        }
+        process.stdout.write(ae.delta);
+      }
+    }
+    if (e.type === "message_end") {
+      if (inThinking) {
+        process.stdout.write("\x1b[0m"); // reset
+        inThinking = false;
+      }
+      console.log();
+    }
+    if (e.type === "tool_execution_start") {
+      if (inThinking) {
+        process.stdout.write("\x1b[0m\n");
+        inThinking = false;
+      }
+      console.log(`  [${e.toolName}(${JSON.stringify(e.args)})]`);
+    }
+  });
+}
+
 async function main() {
   const board = createRandomMidGameBoard();
 
@@ -30,24 +67,7 @@ async function main() {
   console.log("=".repeat(60));
 
   const cluegiver = createCluegiverAgent(model, apiKey);
-
-  // Subscribe to see all LLM output
-  cluegiver.agent.subscribe((e) => {
-    if (e.type === "message_update") {
-      const ae = e.assistantMessageEvent;
-      if (ae.type === "text_delta") {
-        process.stdout.write(ae.delta);
-      } else if (ae.type === "thinking_delta") {
-        process.stdout.write(`[think] ${(ae as any).delta}`);
-      }
-    }
-    if (e.type === "message_end") {
-      console.log();
-    }
-    if (e.type === "tool_execution_start") {
-      console.log(`  [tool: ${e.toolName}(${JSON.stringify(e.args)})]`);
-    }
-  });
+  subscribeAgent(cluegiver.agent, "Cluegiver");
 
   const t0 = Date.now();
   let clue;
@@ -56,10 +76,6 @@ async function main() {
     console.log(`\n>> Clue: "${clue.word}" for ${clue.number} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
   } catch (err) {
     console.log(`\n>> Cluegiver failed: ${err instanceof Error ? err.message : err}`);
-    console.log("\nAgent messages:");
-    for (const msg of cluegiver.agent.getMessages()) {
-      console.log(JSON.stringify(msg, null, 2).slice(0, 2000));
-    }
     process.exit(1);
   }
   console.log();
@@ -70,18 +86,7 @@ async function main() {
   console.log("=".repeat(60));
 
   const guesser = createGuesserAgent(model, apiKey);
-
-  guesser.agent.subscribe((e) => {
-    if (e.type === "message_update" && e.assistantMessageEvent.type === "text_delta") {
-      process.stdout.write(e.assistantMessageEvent.delta);
-    }
-    if (e.type === "message_end") {
-      console.log();
-    }
-    if (e.type === "tool_execution_start") {
-      console.log(`  [tool: ${e.toolName}(${JSON.stringify(e.args)})]`);
-    }
-  });
+  subscribeAgent(guesser.agent, "Guesser");
 
   const evaluate = (word: string): GuessResult => {
     const result = evaluateGuess(board, word);
@@ -89,7 +94,7 @@ async function main() {
                   result.type === "assassin" ? "ASSASSIN" :
                   result.type === "wrong" ? result.color :
                   `INVALID: ${result.reason}`;
-    console.log(`  >> Guess: "${word}" -> ${label}`);
+    console.log(`  >> "${word}" -> ${label}`);
     return result;
   };
 

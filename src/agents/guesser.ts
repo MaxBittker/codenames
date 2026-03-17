@@ -45,6 +45,12 @@ export function createGuesserAgent(model: Model<any>, apiKey?: string) {
   let evaluateGuess: ((word: string) => GuessResult) | null = null;
   let currentBoard: BoardState | null = null;
 
+  function endTurn() {
+    turnOver = true;
+    // Abort the agent loop so it doesn't keep calling tools
+    agent.abort();
+  }
+
   const makeGuess: AgentTool<typeof guessParams> = {
     name: "make_guess",
     label: "Make Guess",
@@ -74,7 +80,7 @@ export function createGuesserAgent(model: Model<any>, apiKey?: string) {
       if (result.type === "correct") {
         const remaining = maxGuesses - guessesThisTurn.length;
         if (remaining <= 0) {
-          turnOver = true;
+          endTurn();
           return {
             content: [{ type: "text" as const, text: `"${word}" is RED! Correct! You've used all your guesses. Turn over.` }],
             details: { result },
@@ -86,7 +92,7 @@ export function createGuesserAgent(model: Model<any>, apiKey?: string) {
         };
       }
 
-      turnOver = true;
+      endTurn();
       if (result.type === "assassin") {
         return {
           content: [{ type: "text" as const, text: `"${word}" is the ASSASSIN! Game over!` }],
@@ -113,8 +119,8 @@ export function createGuesserAgent(model: Model<any>, apiKey?: string) {
     description: "End your turn without making another guess. Use this if you're unsure about remaining guesses.",
     parameters: stopParams,
     execute: async () => {
-      turnOver = true;
       stoppedEarly = true;
+      endTurn();
       return {
         content: [{ type: "text" as const, text: "You chose to stop guessing. Turn over." }],
         details: {},
