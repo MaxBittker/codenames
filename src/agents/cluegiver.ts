@@ -31,18 +31,34 @@ const clueParams = Type.Object({
 
 export function createCluegiverAgent(model: Model<any>, apiKey?: string) {
   let capturedClue: Clue | null = null;
+  let currentBoard: BoardState | null = null;
 
   const giveClue: AgentTool<typeof clueParams> = {
     name: "give_clue",
     label: "Give Clue",
-    description: "Submit your clue to the guesser. The clue must be a single word (no spaces, no hyphens). The number indicates how many words on the board relate to your clue.",
+    description: "Submit your clue to the guesser. The clue must be a single word (no spaces, no hyphens). It must not match or contain any board word, and no board word may contain it.",
     parameters: clueParams,
     execute: async (_toolCallId, params) => {
       const word = params.clue.toUpperCase().trim();
       if (word.includes(" ") || word.includes("-")) {
         throw new Error("Clue must be a single word with no spaces or hyphens.");
       }
+      if (currentBoard) {
+        for (const boardWord of currentBoard.words) {
+          const bw = boardWord.toUpperCase();
+          if (word === bw) {
+            throw new Error(`"${word}" is a word on the board. Your clue cannot be a board word.`);
+          }
+          if (bw.includes(word)) {
+            throw new Error(`"${word}" is contained within the board word "${bw}". Your clue cannot be a substring of a board word.`);
+          }
+          if (word.includes(bw)) {
+            throw new Error(`Your clue "${word}" contains the board word "${bw}". Your clue cannot contain a board word.`);
+          }
+        }
+      }
       capturedClue = { word, number: params.number };
+      agent.abort();
       return {
         content: [{ type: "text" as const, text: `Clue submitted: "${capturedClue.word}" for ${capturedClue.number}` }],
         details: { clue: capturedClue },
@@ -62,6 +78,7 @@ export function createCluegiverAgent(model: Model<any>, apiKey?: string) {
 
   async function getClue(board: BoardState, turnNumber: number): Promise<Clue> {
     capturedClue = null;
+    currentBoard = board;
     agent.clearMessages();
 
     const boardView = formatBoardForCluegiver(board);
