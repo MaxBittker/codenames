@@ -1,0 +1,23 @@
+model = "Qwen/Qwen3-4B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 16
+
+[sampling]
+max_tokens = 512
+
+[[env]]
+id = "maxbittker/codenames"
+args = { train_size = 200, eval_size = 50, guesser_model = "openai/gpt-5.4-nano" }
+
+[eval]
+interval = 25
+num_examples = 20
+rollouts_per_example = 4
+
+[[eval.env]]
+id = "maxbittker/codenames"
+args = { train_size = 200, eval_size = 50, guesser_model = "openai/gpt-5.4-nano" }
+
+[checkpoints]
+interval = 50

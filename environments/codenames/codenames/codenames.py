@@ -67,21 +67,20 @@ class LLMGuesser:
 
     def __init__(
         self,
-        model: str = "openai/gpt-4.1-mini",
+        model: str = "openai/gpt-5.4-nano",
         api_base: str | None = None,
         api_key: str | None = None,
     ):
         resolved_base, resolved_key = api_base, api_key
 
-        # Fall back to OPENAI_API_KEY env var
+        # Fall back to OPENAI_API_KEY env var (uses default OpenAI base URL)
         if not resolved_key:
             resolved_key = os.environ.get("OPENAI_API_KEY")
 
-        # Fall back to prime CLI config
-        if not resolved_key or not resolved_base:
+        # Fall back to prime CLI config only if no key found yet
+        if not resolved_key:
             prime_base, prime_key = _read_prime_config()
-            if not resolved_key:
-                resolved_key = prime_key
+            resolved_key = prime_key
             if not resolved_base:
                 resolved_base = prime_base
 
@@ -92,7 +91,8 @@ class LLMGuesser:
             client_kwargs["api_key"] = resolved_key
 
         self.client = AsyncOpenAI(**client_kwargs)
-        self.model = model
+        # Strip provider prefix (e.g. "openai/gpt-5.4-nano" -> "gpt-5.4-nano")
+        self.model = model.split("/", 1)[-1] if "/" in model else model
 
     async def guess(
         self, clue_word: str, max_guesses: int, unrevealed_words: list[str]
@@ -110,7 +110,7 @@ class LLMGuesser:
                 {"role": "system", "content": GUESSER_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            max_tokens=100,
+            max_completion_tokens=100,
             temperature=0.0,
         )
 
@@ -194,7 +194,7 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
 
     def __init__(
         self,
-        guesser_model: str = "openai/gpt-4.1-mini",
+        guesser_model: str = "openai/gpt-5.4-nano",
         guesser_api_base: str | None = None,
         guesser_api_key: str | None = None,
         max_turns: int = 2,
@@ -241,10 +241,12 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
             state["final_env_response"] = result
         return result
 
-    async def is_completed(self, state: dict[str, Any], **kwargs: Any) -> bool:
-        if state.get("game_over", False):
+    async def is_completed(self, *args: Any, **kwargs: Any) -> bool:
+        # verifiers calls this as (messages, state) or (state,) depending on version
+        state = args[-1] if args else kwargs.get("state", {})
+        if isinstance(state, dict) and state.get("game_over", False):
             return True
-        return await super().is_completed(state, **kwargs)
+        return await super().is_completed(*args, **kwargs)
 
     async def give_clue(self, word: str, number: int, state_token: str) -> str:
         state = self._state_registry[state_token]
@@ -328,7 +330,7 @@ def load_environment(
     train_size: int = 800,
     eval_size: int = 200,
     seed: int = 0,
-    guesser_model: str = "openai/gpt-4.1-mini",
+    guesser_model: str = "openai/gpt-5.4-nano",
     guesser_api_base: str | None = None,
     guesser_api_key: str | None = None,
     max_turns: int = 2,
