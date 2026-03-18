@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import random
+
+from .types import BoardState, CardColor, GuessResult
+from .wordpool import WORD_POOL
+
+
+def shuffle(items: list, rng: random.Random | None = None) -> list:
+    engine = rng or random
+    result = list(items)
+    engine.shuffle(result)
+    return result
+
+
+def select_words(pool: list[str] | None = None, rng: random.Random | None = None) -> list[str]:
+    return shuffle(pool or WORD_POOL, rng)[:25]
+
+
+def generate_key_grid(rng: random.Random | None = None) -> list[CardColor]:
+    colors: list[CardColor] = [
+        *["Red"] * 8,
+        *["Blue"] * 7,
+        *["Civilian"] * 9,
+        "Assassin",
+    ]
+    return shuffle(colors, rng)
+
+
+def create_board(
+    words: list[str] | None = None,
+    key_grid: list[CardColor] | None = None,
+    rng: random.Random | None = None,
+) -> BoardState:
+    return BoardState(
+        words=[word.upper() for word in (words or select_words(rng=rng))],
+        key_grid=list(key_grid or generate_key_grid(rng=rng)),
+        revealed=[None] * 25,
+    )
+
+
+def evaluate_guess(board: BoardState, guess_word: str) -> GuessResult:
+    upper_word = guess_word.upper().strip()
+    try:
+        index = next(i for i, word in enumerate(board.words) if word == upper_word)
+    except StopIteration:
+        return GuessResult(type="invalid", word=guess_word, reason="Word not found on board")
+
+    if board.revealed[index] is not None:
+        return GuessResult(type="invalid", word=guess_word, reason="Word already revealed")
+
+    color = board.key_grid[index]
+    board.revealed[index] = color
+    if color == "Red":
+        return GuessResult(type="correct", word=board.words[index], color="Red")
+    if color == "Assassin":
+        return GuessResult(type="assassin", word=board.words[index])
+    return GuessResult(type="wrong", word=board.words[index], color=color)
+
+
+def count_remaining(board: BoardState, color: CardColor) -> int:
+    return sum(
+        1
+        for revealed, actual in zip(board.revealed, board.key_grid)
+        if revealed is None and actual == color
+    )
+
+
+def format_board_for_cluegiver(board: BoardState) -> str:
+    red: list[str] = []
+    blue: list[str] = []
+    civilian: list[str] = []
+    assassin = ""
+
+    for word, color, revealed in zip(board.words, board.key_grid, board.revealed):
+        if revealed is not None:
+            continue
+        if color == "Red":
+            red.append(word)
+        elif color == "Blue":
+            blue.append(word)
+        elif color == "Civilian":
+            civilian.append(word)
+        else:
+            assassin = word
+
+    return "\n".join(
+        [
+            f"RED words to find ({len(red)} remaining): {', '.join(red)}",
+            f"BLUE words to AVOID: {', '.join(blue)}",
+            f"CIVILIAN words to AVOID: {', '.join(civilian)}",
+            f"ASSASSIN word to AVOID: {assassin}",
+        ]
+    )
+
+
