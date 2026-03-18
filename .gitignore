@@ -7,3 +7,12 @@ __pycache__/
 *.whl
 outputs/
 logs/
+
+# outputs from `prime eval run`
+./outputs
+./environments/*/outputs
+
+
+configs/rl/*
+configs/gepa/*
+configs/eval/*

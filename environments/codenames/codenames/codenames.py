@@ -70,6 +70,7 @@ class LLMGuesser:
         model: str = "openai/gpt-5.4-nano",
         api_base: str | None = None,
         api_key: str | None = None,
+        max_completion_tokens: int = 100,
     ):
         resolved_base, resolved_key = api_base, api_key
 
@@ -91,8 +92,15 @@ class LLMGuesser:
             client_kwargs["api_key"] = resolved_key
 
         self.client = AsyncOpenAI(**client_kwargs)
-        # Strip provider prefix (e.g. "openai/gpt-5.4-nano" -> "gpt-5.4-nano")
-        self.model = model.split("/", 1)[-1] if "/" in model else model
+        # Strip known provider prefixes (e.g. "openai/gpt-5.4-nano" -> "gpt-5.4-nano")
+        # but keep HuggingFace-style org/model names intact.
+        _PROVIDER_PREFIXES = ("openai/", "anthropic/", "google/")
+        lower = model.lower()
+        if any(lower.startswith(p) for p in _PROVIDER_PREFIXES):
+            self.model = model.split("/", 1)[-1]
+        else:
+            self.model = model
+        self.max_completion_tokens = max_completion_tokens
 
     async def guess(
         self, clue_word: str, max_guesses: int, unrevealed_words: list[str]
@@ -110,7 +118,7 @@ class LLMGuesser:
                 {"role": "system", "content": GUESSER_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            max_completion_tokens=100,
+            max_completion_tokens=self.max_completion_tokens,
             temperature=0.0,
         )
 
@@ -197,6 +205,7 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
         guesser_model: str = "openai/gpt-5.4-nano",
         guesser_api_base: str | None = None,
         guesser_api_key: str | None = None,
+        guesser_max_tokens: int = 100,
         max_turns: int = 2,
         **kwargs: Any,
     ):
@@ -204,6 +213,7 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
             model=guesser_model,
             api_base=guesser_api_base,
             api_key=guesser_api_key,
+            max_completion_tokens=guesser_max_tokens,
         )
         self._state_registry: dict[str, dict[str, Any]] = {}
         super().__init__(max_turns=max_turns, system_prompt=CLUEGIVER_SYSTEM_PROMPT, **kwargs)
@@ -299,18 +309,18 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
 
 
 async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
-    """Single-clue reward.
+    """Single-clue reward — per-card additive scoring.
 
     - Assassin hit  → -1.0
-    - Blue hit      → (red_found / 8) - 0.125
-    - Otherwise     → red_found / 8
+    - Each red found → +0.25
+    - Blue hit      → -0.25
     """
     if state.get("assassin_hit", False):
         return -1.0
-    base = state.get("total_red_found", 0) / 8.0
+    reward = state.get("total_red_found", 0) * 0.25
     if state.get("blue_hit", False):
-        base -= 0.125
-    return base
+        reward -= 0.25
+    return reward
 
 
 async def assassin_metric(state: dict[str, Any], **kwargs: Any) -> float:
@@ -333,6 +343,8 @@ def load_environment(
     guesser_model: str = "openai/gpt-5.4-nano",
     guesser_api_base: str | None = None,
     guesser_api_key: str | None = None,
+    guesser_max_tokens: int = 100,
+    self_play: bool = False,
     max_turns: int = 2,
     **kwargs: Any,
 ) -> vf.Environment:
@@ -342,11 +354,18 @@ def load_environment(
         weights=[1.0, 0.0, 0.0],
     )
 
+    if self_play:
+        # No explicit API key/base — falls through to prime config,
+        # which points at the training inference server.
+        guesser_api_base = None
+        guesser_api_key = None
+
     return CodenamesCluegiverEnv(
         dataset=dataset,
         eval_dataset=eval_dataset,
         rubric=rubric,
         guesser_model=guesser_model,
+        guesser_max_tokens=guesser_max_tokens,
         guesser_api_base=guesser_api_base,
         guesser_api_key=guesser_api_key,
         max_turns=max_turns,
