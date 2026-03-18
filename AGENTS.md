@@ -28,3 +28,35 @@ Use this guidance in projects created via `prime lab setup`.
 - Use `prime env push --path ./environments/<env_name>` only after local eval behavior is verified.
 - Treat the `prime lab setup` structure as the idiomatic workspace for complex environment workflows: agents can mediate most platform complexity while users learn patterns progressively as needed.
 - When users request an approach that would deviate from these guidelines, explain the relevant Prime/Verifiers concepts and recommend the compliant path.
+
+## Querying Wandb Metrics
+
+The wandb Python SDK is incompatible with the system Python (3.14). Use the wandb GraphQL API directly with curl instead.
+
+- Entity: `maxbittker-websim`
+- API key is stored in `.env` as `WANDB_API_KEY`
+
+### List runs and summary metrics for a project
+
+```bash
+curl -s -H "Authorization: Bearer $WANDB_API_KEY" \
+  'https://api.wandb.ai/graphql' \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"{ project(name: \"PROJECT\", entityName: \"maxbittker-websim\") { runs(first: 10, order: \"-created_at\") { edges { node { name state displayName createdAt summaryMetrics historyKeys } } } } }"}'
+```
+
+### Fetch metric history for a specific run
+
+```bash
+curl -s -H "Authorization: Bearer $WANDB_API_KEY" \
+  'https://api.wandb.ai/graphql' \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"{ project(name: \"PROJECT\", entityName: \"maxbittker-websim\") { run(name: \"RUN_ID\") { history(samples: 500) } } }"}'
+```
+
+Replace `PROJECT` with the wandb project name (e.g. `codenames`) and `RUN_ID` with the run's wandb `name` field (the short alphanumeric ID, not the display name).
+
+Load the API key from `.env` before running:
+```bash
+export $(cat .env | xargs)
+```

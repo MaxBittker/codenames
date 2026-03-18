@@ -43,7 +43,7 @@ class CodenamesDryRunTests(unittest.TestCase):
                     w for w, c in zip(board.words, board.key_grid) if c == "Red"
                 ]
                 # Mock guesser returns first red word
-                mock_instance.guess.return_value = [red_words[0]]
+                mock_instance.guess.return_value = [(red_words[0], "seems related")]
 
                 state = {
                     "info": {
@@ -80,6 +80,79 @@ class CodenamesDryRunTests(unittest.TestCase):
                 self.assertEqual(red_found, 1.0)
 
         asyncio.run(run())
+
+
+    def test_board_config_validation_rejects_mismatch(self) -> None:
+        from codenames.types import BoardConfig
+
+        with self.assertRaises(ValueError):
+            BoardConfig(board_size=10, num_red=3, num_blue=2, num_civilian=6, num_assassin=1)
+
+    def test_easy_board_creation(self) -> None:
+        from random import Random
+
+        from codenames.game import create_board
+        from codenames.types import DIFFICULTY_PRESETS
+
+        config = DIFFICULTY_PRESETS["easy"]
+        rng = Random(42)
+        board = create_board(rng=rng, config=config)
+
+        self.assertEqual(len(board.words), 6)
+        self.assertEqual(len(board.key_grid), 6)
+        self.assertEqual(len(board.revealed), 6)
+        self.assertEqual(board.key_grid.count("Red"), 3)
+        self.assertEqual(board.key_grid.count("Blue"), 1)
+        self.assertEqual(board.key_grid.count("Civilian"), 1)
+        self.assertEqual(board.key_grid.count("Assassin"), 1)
+
+    def test_reward_normalization_all_reds_equals_two(self) -> None:
+        """Finding all reds should yield reward 2.0 for any board config."""
+
+        async def run() -> None:
+            from codenames.codenames import game_reward
+
+            for num_red in (3, 5, 8):
+                state = {
+                    "total_red_found": num_red,
+                    "assassin_hit": False,
+                    "blue_hit": False,
+                    "info": {"board_config": {"num_red": num_red}},
+                }
+                reward = await game_reward(state=state)
+                self.assertAlmostEqual(reward, 2.0, msg=f"num_red={num_red}")
+
+        asyncio.run(run())
+
+    def test_reward_backward_compat_no_board_config(self) -> None:
+        """Old rows without board_config should default to num_red=8."""
+
+        async def run() -> None:
+            from codenames.codenames import game_reward
+
+            state = {
+                "total_red_found": 2,
+                "assassin_hit": False,
+                "blue_hit": False,
+                "info": {},
+            }
+            reward = await game_reward(state=state)
+            self.assertAlmostEqual(reward, 0.5)  # 2 * 0.25
+
+        asyncio.run(run())
+
+    def test_make_row_easy_board(self) -> None:
+        from codenames.codenames import _make_row
+        from codenames.types import DIFFICULTY_PRESETS
+
+        config = DIFFICULTY_PRESETS["easy"]
+        row = _make_row(seed=0, split="train", config=config)
+        info = row["info"]
+
+        self.assertIn("board_config", info)
+        self.assertEqual(info["board_config"]["num_red"], 3)
+        self.assertEqual(len(info["words"]), 6)
+        self.assertEqual(len(info["key_grid"]), 6)
 
 
 if __name__ == "__main__":

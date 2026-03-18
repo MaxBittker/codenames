@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 
-from .types import BoardState, CardColor, GuessResult
+from .types import BoardConfig, BoardState, CardColor, GuessResult
 from .wordpool import WORD_POOL
 
 
@@ -13,16 +13,24 @@ def shuffle(items: list, rng: random.Random | None = None) -> list:
     return result
 
 
-def select_words(pool: list[str] | None = None, rng: random.Random | None = None) -> list[str]:
-    return shuffle(pool or WORD_POOL, rng)[:25]
+def select_words(
+    pool: list[str] | None = None,
+    rng: random.Random | None = None,
+    count: int = 25,
+) -> list[str]:
+    return shuffle(pool or WORD_POOL, rng)[:count]
 
 
-def generate_key_grid(rng: random.Random | None = None) -> list[CardColor]:
+def generate_key_grid(
+    rng: random.Random | None = None,
+    config: BoardConfig | None = None,
+) -> list[CardColor]:
+    cfg = config or BoardConfig()
     colors: list[CardColor] = [
-        *["Red"] * 8,
-        *["Blue"] * 7,
-        *["Civilian"] * 9,
-        "Assassin",
+        *["Red"] * cfg.num_red,
+        *["Blue"] * cfg.num_blue,
+        *["Civilian"] * cfg.num_civilian,
+        *["Assassin"] * cfg.num_assassin,
     ]
     return shuffle(colors, rng)
 
@@ -31,11 +39,13 @@ def create_board(
     words: list[str] | None = None,
     key_grid: list[CardColor] | None = None,
     rng: random.Random | None = None,
+    config: BoardConfig | None = None,
 ) -> BoardState:
+    cfg = config or BoardConfig()
     return BoardState(
-        words=[word.upper() for word in (words or select_words(rng=rng))],
-        key_grid=list(key_grid or generate_key_grid(rng=rng)),
-        revealed=[None] * 25,
+        words=[word.upper() for word in (words or select_words(rng=rng, count=cfg.board_size))],
+        key_grid=list(key_grid or generate_key_grid(rng=rng, config=cfg)),
+        revealed=[None] * cfg.board_size,
     )
 
 
@@ -87,8 +97,8 @@ def format_board_for_cluegiver(board: BoardState) -> str:
     return "\n".join(
         [
             f"RED words to find ({len(red)} remaining): {', '.join(red)}",
-            f"BLUE words to AVOID: {', '.join(blue)}",
             f"CIVILIAN words to AVOID: {', '.join(civilian)}",
+            f"BLUE words to AVOID: {', '.join(blue)}",
             f"ASSASSIN word to AVOID: {assassin}",
         ]
     )
