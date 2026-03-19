@@ -6,11 +6,11 @@ rollouts_per_example = 16
 max_async_level = 4
 
 [sampling]
-max_tokens = 4096
+max_tokens = 16384
 
 [[env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, self_play = true, guesser_model = "qwen/qwen3-8b" }
+args = { train_size = 100000, eval_size = 500, guesser_model = "openai/gpt-5.4-nano" }
 
 [eval]
 interval = 25
@@ -19,11 +19,11 @@ rollouts_per_example = 4
 
 [[eval.env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, self_play = true, guesser_model = "qwen/qwen3-8b" }
+args = { train_size = 100000, eval_size = 500, guesser_model = "openai/gpt-5.4-nano" }
 
 [wandb]
 project = "codenames"
-name = "qwen3-4b-t-selfplay"
+name = "qwen3-4b-t-gpt54nano"
 entity = "maxbittker-websim"
 
 [checkpoints]
