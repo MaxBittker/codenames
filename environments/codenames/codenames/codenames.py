@@ -21,11 +21,11 @@ from .types import BoardConfig, BoardState, DIFFICULTY_PRESETS, GuessResult
 CLUEGIVER_SYSTEM_PROMPT = """You are a Codenames cluegiver (codemaster). You are playing cooperatively with a guesser to find RED words on the board.
 
 RULES:
-- You can see the board AND the secret key grid showing which words are Red, Blue, Civilian, or Assassin.
+- You can see the board AND the secret key grid showing which words are Red, Blue, or Assassin.
 - Give a one-word clue and a number indicating how many RED words relate to that clue.
 - Your guesser will try to guess that many words based on your clue.
-- Your clue must be a SINGLE word (no spaces, no hyphens, no parts of board words).
-- AVOID clues that could lead the guesser to Blue, Civilian, or especially the Assassin word.
+- Your clue must be a SINGLE word — no spaces, no hyphens, no parts of board words, max 15 letters.
+- AVOID clues that could lead the guesser to Blue or especially the Assassin word.
 
 STRATEGY:
 - Try to connect 2-3 Red words with a clue to make progress efficiently.
@@ -36,7 +36,7 @@ You MUST use the give_clue tool to submit your clue."""
 
 GUESSER_SYSTEM_PROMPT = """You are a Codenames guesser. You are cooperating with a cluegiver to find RED words.
 
-You can see the board but NOT the secret colors. The cluegiver gave you a one-word clue and a number. The number tells you how many board words relate to that clue. You may guess up to (number + 1) words.
+You can see the board but NOT the secret colors. Every word is either Red, Blue, or the Assassin. The cluegiver gave you a one-word clue and a number. The number tells you how many board words relate to that clue. You may guess up to (number + 1) words.
 
 - Start with the word you're MOST confident about.
 - Stop early if you're unsure — hitting the Assassin loses the game.
@@ -72,7 +72,7 @@ class LLMGuesser:
 
     def __init__(
         self,
-        model: str = "openai/gpt-5.4-nano",
+        model: str = "openai/gpt-5.4-mini",
         api_base: str | None = None,
         api_key: str | None = None,
         max_completion_tokens: int = 16_000,
@@ -214,6 +214,8 @@ def _validate_clue(word: str, board: BoardState) -> str:
     normalized = word.upper().strip()
     if not normalized.isalpha():
         raise ValueError("Clue must be a single alphabetic word.")
+    if len(normalized) > 15:
+        raise ValueError(f"Clue must be 15 letters or fewer (got {len(normalized)}). Try a shorter word.")
     for board_word in board.words:
         if normalized == board_word:
             raise ValueError("Clue cannot exactly match a board word.")
@@ -251,11 +253,11 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
 
     def __init__(
         self,
-        guesser_model: str = "openai/gpt-5.4-nano",
+        guesser_model: str = "openai/gpt-5.4-mini",
         guesser_api_base: str | None = None,
         guesser_api_key: str | None = None,
         guesser_max_tokens: int = 16_000,
-        max_turns: int = 2,
+        max_turns: int = 4,
         **kwargs: Any,
     ):
         self.guesser = LLMGuesser(
@@ -309,6 +311,8 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
 
     async def give_clue(self, word: str, number: int, state_token: str) -> str:
         state = self._state_registry[state_token]
+        if state.get("game_over", False):
+            return "Game already ended. Only one clue per game."
         board = BoardState.from_dict(state["board"])
         num_red = state.get("info", {}).get("board_config", {}).get("num_red", 8)
         clue_word = _validate_clue(word, board)
@@ -393,7 +397,7 @@ def load_environment(
     train_size: int = 800,
     eval_size: int = 200,
     seed: int = 0,
-    guesser_model: str = "openai/gpt-5.4-nano",
+    guesser_model: str = "openai/gpt-5.4-mini",
     guesser_api_base: str | None = None,
     guesser_api_key: str | None = None,
     guesser_max_tokens: int = 16_000,

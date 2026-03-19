@@ -94,13 +94,11 @@ def format_board_for_cluegiver(board: BoardState) -> str:
         else:
             assassin = word
 
-    return "\n".join(
-        [
-            f"RED words to find ({len(red)} remaining): {', '.join(red)}",
-            f"CIVILIAN words to AVOID: {', '.join(civilian)}",
-            f"BLUE words to AVOID: {', '.join(blue)}",
-            f"ASSASSIN word to AVOID: {assassin}",
-        ]
-    )
+    lines = [f"RED words to find ({len(red)} remaining): {', '.join(red)}"]
+    if civilian:
+        lines.append(f"CIVILIAN words to AVOID: {', '.join(civilian)}")
+    lines.append(f"BLUE words to AVOID: {', '.join(blue)}")
+    lines.append(f"ASSASSIN word to AVOID: {assassin}")
+    return "\n".join(lines)
 
 

@@ -10,10 +10,10 @@ CardColor = Literal["Red", "Blue", "Civilian", "Assassin"]
 class BoardConfig:
     """Configuration for board generation with difficulty presets."""
 
-    board_size: int = 25
+    board_size: int = 16
     num_red: int = 8
     num_blue: int = 7
-    num_civilian: int = 9
+    num_civilian: int = 0
     num_assassin: int = 1
     difficulty: str | None = None
 
@@ -34,10 +34,9 @@ class BoardConfig:
 
 
 DIFFICULTY_PRESETS: dict[str, BoardConfig] = {
-    "easy": BoardConfig(board_size=6, num_red=3, num_blue=1, num_civilian=1, num_assassin=1, difficulty="easy"),
-    "medium": BoardConfig(board_size=12, num_red=5, num_blue=2, num_civilian=4, num_assassin=1, difficulty="medium"),
-    "standard": BoardConfig(board_size=25, num_red=8, num_blue=7, num_civilian=9, num_assassin=1, difficulty="standard"),
-    "hard": BoardConfig(board_size=25, num_red=8, num_blue=9, num_civilian=7, num_assassin=1, difficulty="hard"),
+    "easy": BoardConfig(board_size=7, num_red=3, num_blue=2, num_civilian=1, num_assassin=1, difficulty="easy"),
+    "standard": BoardConfig(board_size=16, num_red=8, num_blue=7, num_civilian=0, num_assassin=1, difficulty="standard"),
+    "hard": BoardConfig(board_size=18, num_red=8, num_blue=9, num_civilian=0, num_assassin=1, difficulty="hard"),
 }
 
 
