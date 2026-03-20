@@ -18,31 +18,47 @@ from .game import (
 from .types import BoardConfig, BoardSamplingConfig, BoardState, GuessResult
 
 
-CLUEGIVER_SYSTEM_PROMPT = """You are a Codenames cluegiver (codemaster). You are playing cooperatively with a guesser to find RED words on the board.
+CLUEGIVER_SYSTEM_PROMPT = """You are a Codenames codemaster (cluegiver). You are cooperating with a guesser to reveal RED words on the board. You can see both the visible board words and the secret key (which words are RED, BLUE, or ASSASSIN). Use that information to give safe, useful single-word clues that connect RED words while avoiding clues that might point the guesser to BLUE or ASSASSIN words.
 
-RULES:
-- You can see the board AND the secret key grid showing which words are Red, Blue, or Assassin.
-- Give a one-word clue and a number indicating how many RED words relate to that clue.
-- You must also declare which specific RED words you are targeting with your clue.
-- Your guesser will try to guess that many words based on your clue.
-- Your clue must be a SINGLE word — no spaces, no hyphens, no parts of board words, max 15 letters.
-- AVOID clues that could lead the guesser to Blue or especially the Assassin word.
+Required output format (strict — follow exactly):
+- Your reply MUST contain a <clue> ... </clue> block.
+- You SHOULD include a brief <reasoning> ... </reasoning> block before <clue>, but keep it very concise (2-4 sentences max). Long reasoning wastes tokens without improving clue quality. Focus on: which RED words you're connecting, why the clue avoids BLUE/ASSASSIN words.
+- The <clue> block must use this exact three-line field format (all three fields required):
+    word: YOUR_CLUE
+    number: N
+    words: TARGET1, TARGET2, ...
+  - 'word:' — the single-word clue (see clue rules below)
+  - 'number:' — an integer equal to the number of TARGET words you list
+  - 'words:' — a comma-separated list of the exact RED board words you intend the guesser to pick (must be actual RED words on the board)
 
-STRATEGY:
-- Try to connect multiple Red words with a clue to make progress efficiently.
-- Avoid clues that could also match Blue or Assassin words.
-- Consider what the guesser might think - avoid ambiguous clues.
+Clue rules (hard constraints you must enforce):
+- The clue MUST be a single token/word with no spaces and no hyphens. (e.g., "piano" allowed; "piano-player" or "piano player" not allowed.)
+- Maximum length: 15 characters.
+- Do not use any substring or morphological variant of any board word (do not use parts of board words, or obvious derivations/inflections of a board word). For example, if the board contains "TICK", do not use "ticking" or "ticklish".
+- The clue must not be identical to any board word.
+- Prefer alphabetic, readily interpretable words (avoid obscure punctuation or symbols).
+- Do not give multiword phrases, compound words with spaces, or punctuation inside the clue.
 
-Respond with your reasoning inside <reasoning> tags, then your clue inside <clue> tags using the exact format below:
+Safety and avoidance rules:
+- Avoid clues that plausibly and strongly point to any BLUE words or the ASSASSIN word. Before giving a clue, explicitly check for likely associations with every BLUE and the ASSASSIN word and state in your <reasoning> why you judged the clue safe.
+- Never target BLUE or ASSASSIN words in the 'words:' list.
+- If a candidate clue risks pointing to a BLUE or ASSASSIN word (strong, plausible association), discard it and choose a safer clue even if it links fewer RED words.
 
-<reasoning>
-Explain your thought process here — which Red words you want to connect, why you chose this clue, and why it avoids Blue/Assassin words.
-</reasoning>
-<clue>
-word: YOUR_CLUE
-number: N
-words: TARGET1, TARGET2, ...
-</clue>"""
+Strategy guidance:
+- Aim to connect multiple RED words — linking 2+ words per clue is the key to winning efficiently.
+- Seek clear, common semantic links (category membership, shared attributes, common compound phrases, clear functional relationships, widely-known cultural references).
+- Consider the guesser's perspective — avoid highly idiosyncratic or ambiguous connections that could plausibly be interpreted as pointing to BLUE/ASSASSIN words.
+- Check for homonyms or word senses that might accidentally match BLUE/ASSASSIN words; avoid them.
+- If a clue could be reasonably taken to mean a BLUE word, discard it.
+
+Validation checklist (before replying):
+- Does <clue> include 'word:', 'number:', and 'words:' exactly?
+- Is 'number:' equal to the count of words listed in 'words:'?
+- Are all listed targets actual RED words on the board?
+- Is the clue a single word ≤15 characters, not a substring/morph of any board word, and not identical to a board word?
+- Does the clue avoid strong associations with BLUE and ASSASSIN words?
+
+The <clue> block must be exact and machine-parseable. Do not include extra commentary, tables, or formatting outside the tagged blocks."""
 
 GUESSER_SYSTEM_PROMPT = """You are a Codenames guesser. You are cooperating with a cluegiver to find RED words.
 
@@ -86,6 +102,7 @@ class LLMGuesser:
         api_base: str | None = None,
         api_key: str | None = None,
         max_completion_tokens: int = 16_000,
+        temperature: float | None = 0.0,
     ):
         resolved_base, resolved_key = api_base, api_key
 
@@ -116,6 +133,7 @@ class LLMGuesser:
         else:
             self.model = model
         self.max_completion_tokens = max_completion_tokens
+        self.temperature = temperature
 
     async def guess(
         self, clue_word: str, max_guesses: int, unrevealed_words: list[str]
@@ -128,15 +146,17 @@ class LLMGuesser:
             f"Remaining words: {word_list}"
         )
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
+        api_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
                 {"role": "system", "content": GUESSER_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            max_completion_tokens=self.max_completion_tokens,
-            temperature=0.0,
-        )
+            "max_completion_tokens": self.max_completion_tokens,
+        }
+        if self.temperature is not None:
+            api_kwargs["temperature"] = self.temperature
+        response = await self.client.chat.completions.create(**api_kwargs)
 
         text = (response.choices[0].message.content or "").strip()
         unrevealed_upper = {w.upper() for w in unrevealed_words}
@@ -248,7 +268,7 @@ def _parse_clue_block(text: str) -> tuple[str, int, list[str]]:
 # Environment
 # ---------------------------------------------------------------------------
 
-parser = vf.XMLParser(fields=["reasoning", "clue"])
+parser = vf.XMLParser(fields=["clue"])
 
 
 class CodenamesCluegiverEnv(vf.MultiTurnEnv):
@@ -268,6 +288,7 @@ class CodenamesCluegiverEnv(vf.MultiTurnEnv):
         guesser_api_base: str | None = None,
         guesser_api_key: str | None = None,
         guesser_max_tokens: int = 16_000,
+        guesser_temperature: float | None = 0.0,
         max_turns: int = 2,
         **kwargs: Any,
     ):
@@ -276,6 +297,7 @@ class CodenamesCluegiverEnv(vf.MultiTurnEnv):
             api_base=guesser_api_base,
             api_key=guesser_api_key,
             max_completion_tokens=guesser_max_tokens,
+            temperature=guesser_temperature,
         )
         super().__init__(
             max_turns=max_turns,
@@ -472,6 +494,7 @@ def load_environment(
     guesser_api_base: str | None = None,
     guesser_api_key: str | None = None,
     guesser_max_tokens: int = 16_000,
+    guesser_temperature: float | None = 0.0,
     self_play: bool = False,
     max_turns: int = 2,
     min_board_size: int = 4,
@@ -509,6 +532,7 @@ def load_environment(
         rubric=rubric,
         guesser_model=guesser_model,
         guesser_max_tokens=guesser_max_tokens,
+        guesser_temperature=guesser_temperature,
         guesser_api_base=guesser_api_base,
         guesser_api_key=guesser_api_key,
         max_turns=max_turns,
