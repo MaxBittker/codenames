@@ -61,7 +61,7 @@ class CodenamesDryRunTests(unittest.TestCase):
                 # Directly call give_clue with a valid clue
                 args = env.update_tool_args(
                     "give_clue",
-                    {"word": "TESTING", "number": 1},
+                    {"clue": "TESTING", "number": 1, "words": [red_words[0]]},
                     [],
                     state,
                 )
@@ -69,6 +69,7 @@ class CodenamesDryRunTests(unittest.TestCase):
 
                 self.assertTrue(state["game_over"])
                 self.assertIn("Red found:", transcript)
+                self.assertIn("Called shots hit:", transcript)
 
                 reward = await game_reward(state=state)
                 assassin = await assassin_metric(state=state)
@@ -79,6 +80,10 @@ class CodenamesDryRunTests(unittest.TestCase):
                 self.assertEqual(assassin, 0.0)
                 self.assertEqual(red_found, 1.0)
 
+                # Shot calling: we targeted the word the mock guesser returns
+                self.assertEqual(state["shots_hit"], 1)
+                self.assertEqual(state["target_words"], [red_words[0]])
+
         asyncio.run(run())
 
 
@@ -86,25 +91,32 @@ class CodenamesDryRunTests(unittest.TestCase):
         from codenames.types import BoardConfig
 
         with self.assertRaises(ValueError):
-            BoardConfig(board_size=10, num_red=3, num_blue=2, num_civilian=6, num_assassin=1)
+            BoardConfig(board_size=10, num_red=3, num_blue=2, num_assassin=1)
 
-    def test_easy_board_creation(self) -> None:
+    def test_sampling_config_produces_valid_boards(self) -> None:
         from random import Random
 
         from codenames.game import create_board
-        from codenames.types import DIFFICULTY_PRESETS
+        from codenames.types import BoardSamplingConfig
 
-        config = DIFFICULTY_PRESETS["easy"]
-        rng = Random(42)
-        board = create_board(rng=rng, config=config)
+        sampling = BoardSamplingConfig(
+            min_board_size=4, max_board_size=16,
+            min_red_ratio=0.3, max_red_ratio=0.6,
+        )
+        for seed in range(50):
+            rng = Random(seed)
+            config = sampling.sample(rng)
+            board = create_board(rng=rng, config=config)
 
-        self.assertEqual(len(board.words), 6)
-        self.assertEqual(len(board.key_grid), 6)
-        self.assertEqual(len(board.revealed), 6)
-        self.assertEqual(board.key_grid.count("Red"), 3)
-        self.assertEqual(board.key_grid.count("Blue"), 1)
-        self.assertEqual(board.key_grid.count("Civilian"), 1)
-        self.assertEqual(board.key_grid.count("Assassin"), 1)
+            self.assertGreaterEqual(config.board_size, 4)
+            self.assertLessEqual(config.board_size, 16)
+            self.assertGreaterEqual(config.num_red, 2)
+            self.assertEqual(config.num_assassin, 1)
+            self.assertEqual(len(board.words), config.board_size)
+            self.assertEqual(len(board.key_grid), config.board_size)
+            self.assertEqual(board.key_grid.count("Red"), config.num_red)
+            self.assertEqual(board.key_grid.count("Blue"), config.num_blue)
+            self.assertEqual(board.key_grid.count("Assassin"), 1)
 
     def test_reward_normalization_all_reds_equals_two(self) -> None:
         """Finding all reds should yield reward 2.0 for any board config."""
@@ -112,7 +124,7 @@ class CodenamesDryRunTests(unittest.TestCase):
         async def run() -> None:
             from codenames.codenames import game_reward
 
-            for num_red in (3, 5, 8):
+            for num_red in (2, 5, 10):
                 state = {
                     "total_red_found": num_red,
                     "assassin_hit": False,
@@ -125,7 +137,7 @@ class CodenamesDryRunTests(unittest.TestCase):
         asyncio.run(run())
 
     def test_reward_backward_compat_no_board_config(self) -> None:
-        """Old rows without board_config should default to num_red=8."""
+        """Old rows without board_config should default to num_red=4."""
 
         async def run() -> None:
             from codenames.codenames import game_reward
@@ -137,22 +149,25 @@ class CodenamesDryRunTests(unittest.TestCase):
                 "info": {},
             }
             reward = await game_reward(state=state)
-            self.assertAlmostEqual(reward, 0.5)  # 2 * 0.25
+            self.assertAlmostEqual(reward, 1.0)  # 2 * (2.0/4)
 
         asyncio.run(run())
 
-    def test_make_row_easy_board(self) -> None:
+    def test_make_row_with_sampling(self) -> None:
         from codenames.codenames import _make_row
-        from codenames.types import DIFFICULTY_PRESETS
+        from codenames.types import BoardSamplingConfig
 
-        config = DIFFICULTY_PRESETS["easy"]
-        row = _make_row(seed=0, split="train", config=config)
+        sampling = BoardSamplingConfig(min_board_size=6, max_board_size=10)
+        row = _make_row(seed=0, split="train", sampling=sampling)
         info = row["info"]
 
         self.assertIn("board_config", info)
-        self.assertEqual(info["board_config"]["num_red"], 3)
-        self.assertEqual(len(info["words"]), 6)
-        self.assertEqual(len(info["key_grid"]), 6)
+        self.assertGreaterEqual(info["board_config"]["num_red"], 2)
+        board_size = info["board_config"]["board_size"]
+        self.assertGreaterEqual(board_size, 6)
+        self.assertLessEqual(board_size, 10)
+        self.assertEqual(len(info["words"]), board_size)
+        self.assertEqual(len(info["key_grid"]), board_size)
 
 
 if __name__ == "__main__":

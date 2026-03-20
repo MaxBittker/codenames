@@ -15,7 +15,7 @@ from .game import (
     evaluate_guess,
     format_board_for_cluegiver,
 )
-from .types import BoardConfig, BoardState, DIFFICULTY_PRESETS, GuessResult
+from .types import BoardConfig, BoardSamplingConfig, BoardState, GuessResult
 
 
 CLUEGIVER_SYSTEM_PROMPT = """You are a Codenames cluegiver (codemaster). You are playing cooperatively with a guesser to find RED words on the board.
@@ -23,16 +23,17 @@ CLUEGIVER_SYSTEM_PROMPT = """You are a Codenames cluegiver (codemaster). You are
 RULES:
 - You can see the board AND the secret key grid showing which words are Red, Blue, or Assassin.
 - Give a one-word clue and a number indicating how many RED words relate to that clue.
+- You must also declare which specific RED words you are targeting with your clue.
 - Your guesser will try to guess that many words based on your clue.
 - Your clue must be a SINGLE word — no spaces, no hyphens, no parts of board words, max 15 letters.
 - AVOID clues that could lead the guesser to Blue or especially the Assassin word.
 
 STRATEGY:
-- Try to connect 2-3 Red words with a clue to make progress efficiently.
+- Try to connect multiple Red words with a clue to make progress efficiently.
 - Avoid clues that could also match Blue or Assassin words.
 - Consider what the guesser might think - avoid ambiguous clues.
 
-You MUST use the give_clue tool to submit your clue."""
+You MUST use the give_clue tool to submit your clue. Include the target words you intend the guesser to find."""
 
 GUESSER_SYSTEM_PROMPT = """You are a Codenames guesser. You are cooperating with a cluegiver to find RED words.
 
@@ -156,56 +157,26 @@ class LLMGuesser:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_board_config(
-    difficulty: str | None = None,
-    board_size: int | None = None,
-    num_red: int | None = None,
-    num_blue: int | None = None,
-    num_civilian: int | None = None,
-    num_assassin: int | None = None,
-) -> BoardConfig | None:
-    """Build a BoardConfig from a difficulty preset and/or explicit overrides.
-
-    Returns ``None`` when all arguments are ``None`` (use standard defaults).
-    """
-    if all(v is None for v in (difficulty, board_size, num_red, num_blue, num_civilian, num_assassin)):
-        return None
-
-    # Start from a preset or standard defaults
-    base = DIFFICULTY_PRESETS.get(difficulty or "standard")
-    assert base is not None
-    bs = board_size if board_size is not None else base.board_size
-    nr = num_red if num_red is not None else base.num_red
-    nb = num_blue if num_blue is not None else base.num_blue
-    na = num_assassin if num_assassin is not None else base.num_assassin
-
-    if num_civilian is not None:
-        nc = num_civilian
-    else:
-        # Auto-adjust civilians to fill remaining slots
-        nc = bs - nr - nb - na
-
-    return BoardConfig(
-        board_size=bs, num_red=nr, num_blue=nb,
-        num_civilian=nc, num_assassin=na, difficulty=difficulty,
-    )
-
-
 def _build_dataset(
     train_size: int, eval_size: int, seed: int,
-    config: BoardConfig | None = None,
+    sampling: BoardSamplingConfig,
 ) -> tuple[Dataset, Dataset]:
-    train_rows = [_make_row(seed + index, "train", config=config) for index in range(train_size)]
-    eval_rows = [_make_row(seed + train_size + index, "eval", config=config) for index in range(eval_size)]
+    train_rows = [_make_row(seed + index, "train", sampling=sampling) for index in range(train_size)]
+    eval_rows = [_make_row(seed + train_size + index, "eval", sampling=sampling) for index in range(eval_size)]
     return Dataset.from_list(train_rows), Dataset.from_list(eval_rows)
 
 
-def _make_row(seed: int, split: str, config: BoardConfig | None = None) -> dict[str, Any]:
+def _make_row(seed: int, split: str, sampling: BoardSamplingConfig) -> dict[str, Any]:
     rng = Random(seed)
+    config = sampling.sample(rng)
     board = create_board(rng=rng, config=config)
-    info: dict[str, Any] = {"seed": seed, "split": split, "words": board.words, "key_grid": board.key_grid}
-    if config is not None:
-        info["board_config"] = config.to_dict()
+    info: dict[str, Any] = {
+        "seed": seed,
+        "split": split,
+        "words": board.words,
+        "key_grid": board.key_grid,
+        "board_config": config.to_dict(),
+    }
     prompt = [{"role": "user", "content": f"Current board:\n{format_board_for_cluegiver(board)}"}]
     return {"prompt": prompt, "info": info, "answer": "", "task": split}
 
@@ -309,15 +280,27 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
             return True
         return await super().is_completed(*args, **kwargs)
 
-    async def give_clue(self, word: str, number: int, state_token: str) -> str:
+    async def give_clue(self, clue: str, number: int, words: list[str], state_token: str) -> str:
+        """Give a clue to the guesser.
+
+        Args:
+            clue: A single-word clue for the guesser.
+            number: How many RED words this clue relates to.
+            words: The specific RED words you are targeting with this clue.
+            state_token: Internal state reference (hidden from model).
+        """
         state = self._state_registry[state_token]
         if state.get("game_over", False):
             return "Game already ended. Only one clue per game."
         board = BoardState.from_dict(state["board"])
-        num_red = state.get("info", {}).get("board_config", {}).get("num_red", 8)
-        clue_word = _validate_clue(word, board)
+        num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+        clue_word = _validate_clue(clue, board)
         clue_number = max(1, min(int(number), num_red))
         state["last_clue"] = {"word": clue_word, "number": clue_number}
+
+        # Store the called-shot target words
+        target_words = [w.upper().strip() for w in words]
+        state["target_words"] = target_words
 
         unrevealed = [w for w, r in zip(board.words, board.revealed) if r is None]
         max_guesses = clue_number + 1
@@ -326,10 +309,12 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
             guesses = await self.guesser.guess(clue_word, max_guesses, unrevealed)
         except Exception as exc:
             state["game_over"] = True
+            state["shots_hit"] = 0
             return f"Guesser error: {exc}"
 
         if not guesses:
             state["game_over"] = True
+            state["shots_hit"] = 0
             remaining = count_remaining(board, "Red")
             return (
                 f'Guesser could not guess any word for "{clue_word}" {clue_number}. '
@@ -349,12 +334,18 @@ class CodenamesCluegiverEnv(vf.StatefulToolEnv):
         state["blue_hit"] = any(r.type == "wrong" and r.color == "Blue" for r, _ in results)
         state["game_over"] = True
 
+        # Count how many called-shot targets were correctly guessed
+        correctly_guessed = {r.word for r, _ in results if r.type == "correct"}
+        shots_hit = sum(1 for t in target_words if t in correctly_guessed)
+        state["shots_hit"] = shots_hit
+
         lines = [f"- {_format_guess_result(r)} — guesser reasoning: \"{reason}\"" for r, reason in results]
         red_remaining = count_remaining(board, "Red")
         return (
             f"Guesser guessed:\n"
             + "\n".join(lines)
             + f"\nRed found: {state['total_red_found']}/{num_red}, remaining: {red_remaining}/{num_red}."
+            + f"\nCalled shots hit: {shots_hit}/{len(target_words)}."
         )
 
 
@@ -368,16 +359,29 @@ async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
 
     - Assassin hit  → -1.0
     - Each red found → +2.0 / num_red
-    - Blue hit      → -2.0 / num_red
+    - Blue hit      → -1.0 / num_red  (half the per-red value)
     """
-    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 8)
+    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
     if state.get("assassin_hit", False):
         return -1.0
     per_red = 2.0 / num_red
     reward = state.get("total_red_found", 0) * per_red
     if state.get("blue_hit", False):
-        reward -= per_red
+        reward -= per_red * 0.5
     return reward
+
+
+async def shot_calling_reward(state: dict[str, Any], **kwargs: Any) -> float:
+    """Bonus reward for correctly calling target words.
+
+    Returns shots_hit / shots_called (1.0 if all called targets were guessed
+    correctly, 0.0 if none were).  Returns 0.0 if no targets were declared.
+    """
+    target_words = state.get("target_words", [])
+    if not target_words:
+        return 0.0
+    shots_hit = state.get("shots_hit", 0)
+    return shots_hit / len(target_words)
 
 
 async def assassin_metric(state: dict[str, Any], **kwargs: Any) -> float:
@@ -386,6 +390,10 @@ async def assassin_metric(state: dict[str, Any], **kwargs: Any) -> float:
 
 async def red_found_metric(state: dict[str, Any], **kwargs: Any) -> float:
     return float(state.get("total_red_found", 0))
+
+
+async def shots_hit_metric(state: dict[str, Any], **kwargs: Any) -> float:
+    return float(state.get("shots_hit", 0))
 
 
 # ---------------------------------------------------------------------------
@@ -403,25 +411,24 @@ def load_environment(
     guesser_max_tokens: int = 16_000,
     self_play: bool = False,
     max_turns: int = 2,
-    difficulty: str | None = None,
-    board_size: int | None = None,
-    num_red: int | None = None,
-    num_blue: int | None = None,
-    num_civilian: int | None = None,
-    num_assassin: int | None = None,
+    min_board_size: int = 4,
+    max_board_size: int = 16,
+    min_red_ratio: float = 0.3,
+    max_red_ratio: float = 0.6,
     **kwargs: Any,
 ) -> vf.Environment:
-    config = _resolve_board_config(
-        difficulty=difficulty, board_size=board_size,
-        num_red=num_red, num_blue=num_blue,
-        num_civilian=num_civilian, num_assassin=num_assassin,
+    sampling = BoardSamplingConfig(
+        min_board_size=min_board_size,
+        max_board_size=max_board_size,
+        min_red_ratio=min_red_ratio,
+        max_red_ratio=max_red_ratio,
     )
     dataset, eval_dataset = _build_dataset(
-        train_size=train_size, eval_size=eval_size, seed=seed, config=config,
+        train_size=train_size, eval_size=eval_size, seed=seed, sampling=sampling,
     )
     rubric = vf.Rubric(
-        funcs=[game_reward, assassin_metric, red_found_metric],
-        weights=[1.0, 0.0, 0.0],
+        funcs=[game_reward, shot_calling_reward, assassin_metric, red_found_metric, shots_hit_metric],
+        weights=[1.0, 0.5, 0.0, 0.0, 0.0],
     )
 
     if self_play:

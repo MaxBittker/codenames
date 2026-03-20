@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 
-from .types import BoardConfig, BoardState, CardColor, GuessResult
+from .types import BoardConfig, BoardSamplingConfig, BoardState, CardColor, GuessResult
 from .wordpool import WORD_POOL
 
 
@@ -29,7 +29,6 @@ def generate_key_grid(
     colors: list[CardColor] = [
         *["Red"] * cfg.num_red,
         *["Blue"] * cfg.num_blue,
-        *["Civilian"] * cfg.num_civilian,
         *["Assassin"] * cfg.num_assassin,
     ]
     return shuffle(colors, rng)
@@ -79,7 +78,6 @@ def count_remaining(board: BoardState, color: CardColor) -> int:
 def format_board_for_cluegiver(board: BoardState) -> str:
     red: list[str] = []
     blue: list[str] = []
-    civilian: list[str] = []
     assassin = ""
 
     for word, color, revealed in zip(board.words, board.key_grid, board.revealed):
@@ -89,14 +87,10 @@ def format_board_for_cluegiver(board: BoardState) -> str:
             red.append(word)
         elif color == "Blue":
             blue.append(word)
-        elif color == "Civilian":
-            civilian.append(word)
         else:
             assassin = word
 
     lines = [f"RED words to find ({len(red)} remaining): {', '.join(red)}"]
-    if civilian:
-        lines.append(f"CIVILIAN words to AVOID: {', '.join(civilian)}")
     lines.append(f"BLUE words to AVOID: {', '.join(blue)}")
     lines.append(f"ASSASSIN word to AVOID: {assassin}")
     return "\n".join(lines)

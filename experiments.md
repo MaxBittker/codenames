@@ -20,7 +20,9 @@
 - Removed civilians from the default board config (was 25 words, now 16: 8 red, 7 blue, 1 assassin). Reduces noise and makes every wrong guess meaningfully bad (blue or assassin), which should sharpen the reward signal.
 
 ### Multi-Turn
-- Multi-turn clue-giving (multiple rounds per game) showed high initial reward (~0.9) but with volatile training dynamics. The longer sequence lengths (~1760 tokens) require smaller batch sizes.
+- Multi-turn clue-giving (multiple rounds per game) showed strong reward improvement: game_reward 0.75 → 1.50 in 13 steps, assassin rate 31% → 6%, finding 7.4/8 reds.
+- **But the model learned "pitter-patter" clues** — giving one safe single-word clue per red word (~8 clues per game) instead of connecting multiple words. Without efficiency pressure in the reward, there's no incentive to take the risk of multi-word clues.
+- Multi-turn needs an efficiency component (e.g. penalty per clue given, or bonus for fewer rounds) to incentivize ambitious clue-giving.
 
 ---
 
@@ -45,11 +47,12 @@ Have the cluegiver predict which specific red words its clue is intended for (e.
 - Doesn't change the guesser's information — purely a cluegiver self-assessment
 - Could surface interesting behaviors: does the model learn to predict which words are "guessable"?
 
-### Multi-Turn Refinement
-The multi-turn experiment showed promise but had volatile dynamics. Ideas to stabilize:
-- Reduce max_turns (e.g. 4 rounds instead of 8) to keep sequences shorter
-- Per-round intermediate rewards instead of only end-of-game scoring
-- Progressive difficulty: start single-turn, then increase rounds as the model improves
+### Multi-Turn with Efficiency Reward
+The multi-turn experiment needs efficiency pressure to prevent pitter-patter (one clue per word). Options:
+- **Cap max clue rounds** (e.g. 4 rounds for 8 reds) — forces multi-word clues by construction
+- **Per-clue penalty** — small negative reward per clue given, so fewer rounds = higher reward
+- **Efficiency bonus** — reward `reds_found / clues_given` ratio
+- Key tension: efficiency shaping previously caused reward hacking (ambition bonus). Need a formulation that can't be gamed — capping rounds is the most robust since it's structural, not reward-based
 
 ### Self-Play Variants
 - **Frozen self-play**: use a checkpoint of the training model as guesser (no external API cost)
@@ -61,3 +64,6 @@ Start on easier boards (fewer words, fewer blues) and progressively increase dif
 
 ### Adversarial Boards
 Generate boards where red words are semantically close to blue/assassin words. Forces the model to find more creative, discriminating clues rather than relying on obvious category matches.
+
+### Smaller Model with XML Format + Prompted Reasoning
+Try a smaller model (sub-30B) using XML-based structured output instead of tool calling, with prompt adjustments to make it work. Tool calling broke down on 4B previously, but XML format with a well-tuned prompt might be more robust for smaller models. Also try approximating thinking-mode behavior by prompting the instruct model to reason through its strategy (e.g. consider word associations, assess risk of blue/assassin overlap) before giving its clue. This could get some of the benefits of thinking models without needing the thinking variant.

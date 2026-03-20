@@ -1,4 +1,4 @@
 from .codenames import CodenamesCluegiverEnv, load_environment
-from .types import BoardConfig, DIFFICULTY_PRESETS
+from .types import BoardConfig, BoardSamplingConfig
 
-__all__ = ["BoardConfig", "CodenamesCluegiverEnv", "DIFFICULTY_PRESETS", "load_environment"]
+__all__ = ["BoardConfig", "BoardSamplingConfig", "CodenamesCluegiverEnv", "load_environment"]
