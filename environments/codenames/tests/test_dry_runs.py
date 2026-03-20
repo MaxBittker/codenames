@@ -58,16 +58,22 @@ class CodenamesDryRunTests(unittest.TestCase):
                 }
                 state = await env.setup_state(state)
 
-                # Directly call give_clue with a valid clue
-                args = env.update_tool_args(
-                    "give_clue",
-                    {"clue": "TESTING", "number": 1, "words": [red_words[0]]},
-                    [],
-                    state,
+                # Simulate a model response with XML output
+                xml_response = (
+                    f"<reasoning>\nTESTING is a good clue for {red_words[0]}.\n</reasoning>\n"
+                    f"<clue>\nword: TESTING\nnumber: 1\nwords: {red_words[0]}\n</clue>"
                 )
-                transcript = await env.give_clue(**args)
+                messages = [
+                    {"role": "user", "content": "Current board:\n..."},
+                    {"role": "assistant", "content": xml_response},
+                ]
+
+                result = await env.env_response(messages, state)
 
                 self.assertTrue(state["game_over"])
+                # result is a list of message dicts
+                self.assertIsInstance(result, list)
+                transcript = result[0]["content"]
                 self.assertIn("Red found:", transcript)
                 self.assertIn("Called shots hit:", transcript)
 
@@ -86,6 +92,55 @@ class CodenamesDryRunTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_env_response_missing_clue_block(self) -> None:
+        """env_response handles missing <clue> block gracefully."""
+
+        async def run() -> None:
+            from codenames.codenames import CodenamesCluegiverEnv
+            from codenames.game import create_board
+
+            with patch("codenames.codenames.LLMGuesser"):
+                from datasets import Dataset
+
+                dummy_ds = Dataset.from_list(
+                    [{"prompt": [], "info": {}, "answer": "", "task": "test"}]
+                )
+                env = CodenamesCluegiverEnv(
+                    dataset=dummy_ds,
+                    eval_dataset=dummy_ds,
+                    rubric=None,
+                )
+
+                from random import Random
+
+                rng = Random(5)
+                board = create_board(rng=rng)
+
+                state = {
+                    "info": {
+                        "words": board.words,
+                        "key_grid": board.key_grid,
+                    },
+                    "timing": {
+                        "generation_ms": 0.0,
+                        "scoring_ms": 0.0,
+                        "total_ms": 0.0,
+                    },
+                }
+                state = await env.setup_state(state)
+
+                # Model response without proper XML
+                messages = [
+                    {"role": "user", "content": "Current board:\n..."},
+                    {"role": "assistant", "content": "I think EAGLE is a good clue."},
+                ]
+
+                result = await env.env_response(messages, state)
+
+                self.assertTrue(state["game_over"])
+                self.assertIn("<clue>", result[0]["content"])
+
+        asyncio.run(run())
 
     def test_board_config_validation_rejects_mismatch(self) -> None:
         from codenames.types import BoardConfig
@@ -168,6 +223,21 @@ class CodenamesDryRunTests(unittest.TestCase):
         self.assertLessEqual(board_size, 10)
         self.assertEqual(len(info["words"]), board_size)
         self.assertEqual(len(info["key_grid"]), board_size)
+
+    def test_parse_clue_block(self) -> None:
+        from codenames.codenames import _parse_clue_block
+
+        text = "word: PREDATOR\nnumber: 2\nwords: EAGLE, HAWK"
+        word, number, words = _parse_clue_block(text)
+        self.assertEqual(word, "PREDATOR")
+        self.assertEqual(number, 2)
+        self.assertEqual(words, ["EAGLE", "HAWK"])
+
+    def test_parse_clue_block_missing_field(self) -> None:
+        from codenames.codenames import _parse_clue_block
+
+        with self.assertRaises(ValueError):
+            _parse_clue_block("word: PREDATOR\nnumber: 2")
 
 
 if __name__ == "__main__":

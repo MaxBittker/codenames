@@ -9,7 +9,7 @@ max_tokens = 512
 
 [[env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, guesser_model = "openai/gpt-5.4-mini" }
+args = { train_size = 100000, eval_size = 500, guesser_model = "openai/gpt-5-mini" }
 
 [eval]
 interval = 25
@@ -18,7 +18,7 @@ rollouts_per_example = 4
 
 [[eval.env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, guesser_model = "openai/gpt-5.4-mini" }
+args = { train_size = 100000, eval_size = 500, guesser_model = "openai/gpt-5-mini" }
 
 [wandb]
 project = "codenames"
