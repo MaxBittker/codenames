@@ -1,4 +1,32 @@
 [[endpoint]]
+endpoint_id = "smollm3-3b"
+model = "HuggingFaceTB/SmolLM3-3B"
+url = "https://api.pinference.ai/api/v1"
+key = "PRIME_API_KEY"
+type = "openai_chat_completions"
+
+[[endpoint]]
+endpoint_id = "smollm3-3b-trained"
+model = "HuggingFaceTB/SmolLM3-3B:jfkdxq9vqqqaimo9pl3dyzem"
+url = "https://api.pinference.ai/api/v1"
+key = "PRIME_API_KEY"
+type = "openai_chat_completions"
+
+[[endpoint]]
+endpoint_id = "qwen3-4b-i"
+model = "Qwen/Qwen3-4B-Instruct-2507"
+url = "https://api.pinference.ai/api/v1"
+key = "PRIME_API_KEY"
+type = "openai_chat_completions"
+
+[[endpoint]]
+endpoint_id = "qwen3-4b-i-trained"
+model = "Qwen/Qwen3-4B-Instruct-2507:ryl824rpeis4oko530g3pnr5"
+url = "https://api.pinference.ai/api/v1"
+key = "PRIME_API_KEY"
+type = "openai_chat_completions"
+
+[[endpoint]]
 endpoint_id = "olmo3-32b-t"
 model = "allenai/olmo-3-32b-think"
 url = "https://api.pinference.ai/api/v1"

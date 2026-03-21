@@ -22,7 +22,7 @@ args = { train_size = 100000, eval_size = 500, guesser_model = "openai/gpt-4.1-m
 
 [wandb]
 project = "codenames"
-name = "qwen3-4b-i-xml-v6-clueonly-L"
+name = "qwen3-4b-i-xml-v8-ambition"
 entity = "maxbittker-websim"
 
 [checkpoints]

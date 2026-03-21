@@ -457,16 +457,28 @@ async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
 
 
 async def shot_calling_reward(state: dict[str, Any], **kwargs: Any) -> float:
-    """Bonus reward for correctly calling target words.
+    """Bonus reward for correctly calling target words (absolute, not ratio).
 
-    Returns shots_hit / shots_called (1.0 if all called targets were guessed
-    correctly, 0.0 if none were).  Returns 0.0 if no targets were declared.
+    Returns shots_hit / num_red so that hitting more targets in absolute terms
+    is always better.  Calling 3 and hitting 3 (~0.5) beats calling 1 and
+    hitting 1 (~0.17).  Returns 0.0 if no targets were declared.
     """
     target_words = state.get("target_words", [])
     if not target_words:
         return 0.0
+    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
     shots_hit = state.get("shots_hit", 0)
-    return shots_hit / len(target_words)
+    return shots_hit / num_red
+
+
+async def ambition_reward(state: dict[str, Any], **kwargs: Any) -> float:
+    """Continuous reward that incentivizes multi-target clues.
+
+    number=1 → -1.0, number=2 → 0.0, number≥3 → +1.0 (capped).
+    At weight 0.5: number=1 costs -0.5, number≥3 earns +0.5.
+    """
+    clue_number = (state.get("last_clue") or {}).get("number", 1)
+    return float(max(-1.0, min(1.0, clue_number - 2)))
 
 
 async def assassin_metric(state: dict[str, Any], **kwargs: Any) -> float:
@@ -479,6 +491,11 @@ async def red_found_metric(state: dict[str, Any], **kwargs: Any) -> float:
 
 async def shots_hit_metric(state: dict[str, Any], **kwargs: Any) -> float:
     return float(state.get("shots_hit", 0))
+
+
+async def clue_number_metric(state: dict[str, Any], **kwargs: Any) -> float:
+    """Track the clue number (how many words targeted) for observability."""
+    return float((state.get("last_clue") or {}).get("number", 0))
 
 
 # ---------------------------------------------------------------------------
@@ -515,8 +532,11 @@ def load_environment(
 
     format_reward = parser.get_format_reward_func()
     rubric = vf.Rubric(
-        funcs=[game_reward, shot_calling_reward, format_reward, assassin_metric, red_found_metric, shots_hit_metric],
-        weights=[1.0, 0.5, 0.1, 0.0, 0.0, 0.0],
+        funcs=[
+            game_reward, shot_calling_reward, ambition_reward, format_reward,
+            assassin_metric, red_found_metric, shots_hit_metric, clue_number_metric,
+        ],
+        weights=[1.0, 0.5, 0.5, 0.1, 0.0, 0.0, 0.0, 0.0],
         parser=parser,
     )
 

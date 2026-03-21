@@ -476,13 +476,14 @@ The v0.3.2 env + 4096 tokens is a massive improvement. The 30B model is now able
 
 ### Major Findings (Session Summary)
 
-1. **30B RL training is a clear success**: reward 0.644→1.451 (+125% over 16 steps), approaching gpt-4.1-mini eval performance
-2. **4B RL training diverges**: all runs (v3-v7) show increasing verbosity and declining format reward. The 4B model does not learn output compression.
-3. **Model size is the differentiator**: The 30B model's conciseness breakthrough (step 4-5) is a capacity-dependent phenomenon. 4B lacks capacity to learn format+game simultaneously.
+1. **30B RL training is a clear success**: reward 0.644→1.534 (+138% over 22 steps), surpassing gpt-4.1-mini eval performance
+2. **4B RL training works but plateaus**: reward 0.940→~1.25-1.38 (+33%) over 44 steps. Real learning confirmed by eval (+10.3%), but hits ceiling around reward ~1.25 with noisy oscillation.
+3. **Model size is the differentiator**: The 30B model's conciseness breakthrough (step 4-5) is capacity-dependent. 4B learns game quality but cannot learn output compression — stays at ~400-500 tokens while 30B collapsed to 25.
 4. **env v0.3.2 solved truncation for both models** at step 0, but only 30B maintained low truncation through training
-5. **Assassin avoidance is learnable**: 30B went from 13%→2.6% assassin rate. This is the biggest contributor to reward improvement.
-6. **Shot-calling (theory of mind) improves dramatically through RL**: 30B went from 0.284→0.810. The model learns to predict guesser behavior.
-7. **M compute is unreliable for 4B**: v4/v5/v6 all stalled. L compute fixes this but doesn't fix the learning divergence.
+5. **Assassin avoidance is learnable**: 30B went from 13%→0.5% assassin rate. 4B improved more modestly (12%→4-7% range).
+6. **Shot-calling (theory of mind) improves dramatically through RL**: 30B went from 0.284→0.921. The model learns to predict guesser behavior. 4B: 0.451→0.729.
+7. **M compute is unreliable for 4B**: v4/v5/v6 all stalled. L compute fixes this.
+8. **Format reward ceiling for 4B**: format_reward plateaued at exactly 0.800 and cannot improve further. 30B reached 1.000. This suggests the 4B model's output style (with reasoning) consistently loses 0.2 from the XMLParser scoring.
 
 ### Potential Next Steps
 - [x] All v0.3.0-v0.3.2 env improvements and evaluations
