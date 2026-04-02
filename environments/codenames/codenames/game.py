@@ -75,6 +75,12 @@ def count_remaining(board: BoardState, color: CardColor) -> int:
     )
 
 
+def format_board_for_guesser(board: BoardState) -> str:
+    """Show unrevealed words without color info (guesser can't see colors)."""
+    unrevealed = [w for w, r in zip(board.words, board.revealed) if r is None]
+    return "Remaining words: " + ", ".join(unrevealed)
+
+
 def format_board_for_cluegiver(board: BoardState) -> str:
     red: list[str] = []
     blue: list[str] = []

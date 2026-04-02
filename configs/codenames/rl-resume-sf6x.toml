@@ -1,0 +1,27 @@
+model = "Qwen/Qwen3-4B-Instruct-2507"
+env_files = ["../../.env"]
+max_steps = 260
+batch_size = 2048
+rollouts_per_example = 16
+
+# Resume from dhspcqm5bsrxdp3nl9xgaqi7 step 160
+checkpoint_id = "f7s5f6qnobc739k842mpiabc"
+
+[sampling]
+max_tokens = 4096
+
+[[env]]
+id = "maxbittker/codenames"
+args = { train_size = 100000, eval_size = 500, self_play = true }
+
+[wandb]
+project = "codenames"
+name = "qwen3-4b-i-resume-format-penalty-100steps"
+entity = "maxbittker-websim"
+
+[adapters]
+interval = 5
+keep_last = -1
+
+[infrastructure]
+compute_size = "S"

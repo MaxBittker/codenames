@@ -28,5 +28,9 @@ entity = "maxbittker-websim"
 [checkpoints]
 interval = 50
 
+[adapters]
+interval = 50
+keep_last = -1
+
 [infrastructure]
 compute_size = "L"

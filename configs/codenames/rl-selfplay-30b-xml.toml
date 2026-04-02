@@ -1,10 +1,11 @@
 model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-max_steps = 125
+env_files = ["../../.env"]
+max_steps = 250
 batch_size = 2048
 rollouts_per_example = 16
 
 [sampling]
-max_tokens = 512
+max_tokens = 4096
 
 [[env]]
 id = "maxbittker/codenames"
@@ -17,10 +18,19 @@ rollouts_per_example = 4
 
 [[eval.env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, self_play = true, guesser_model = "Qwen/Qwen3-30B-A3B-Instruct-2507" }
+args = { train_size = 100000, eval_size = 500, self_play = true }
+
+[wandb]
+project = "codenames"
+name = "qwen3-30b-i-selfplay-v3"
+entity = "maxbittker-websim"
 
 [checkpoints]
 interval = 50
+
+[adapters]
+interval = 50
+keep_last = -1
 
 [infrastructure]
 compute_size = "L"

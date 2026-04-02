@@ -2,143 +2,122 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, patch
 
 
 class CodenamesDryRunTests(unittest.TestCase):
-    def test_cluegiver_env_dry_run(self) -> None:
+    def test_turn_processing_dry_run(self) -> None:
         async def run() -> None:
             from codenames.codenames import (
-                CodenamesCluegiverEnv,
+                CodenamesEnv,
                 assassin_metric,
                 game_reward,
                 red_found_metric,
             )
-            from codenames.game import create_board, format_board_for_cluegiver
+            from codenames.game import create_board
 
-            with patch("codenames.codenames.LLMGuesser") as MockGuesser:
-                # Set up mock guesser that returns board words
-                mock_instance = MockGuesser.return_value
-                mock_instance.guess = AsyncMock()
+            from datasets import Dataset
 
-                from datasets import Dataset
+            dummy_ds = Dataset.from_list(
+                [{"prompt": [], "info": {}, "answer": "", "task": "test"}]
+            )
+            env = CodenamesEnv(
+                dataset=dummy_ds,
+                eval_dataset=dummy_ds,
+                rubric=None,
+            )
 
-                dummy_ds = Dataset.from_list(
-                    [{"prompt": [], "info": {}, "answer": "", "task": "test"}]
-                )
-                env = CodenamesCluegiverEnv(
-                    dataset=dummy_ds,
-                    eval_dataset=dummy_ds,
-                    rubric=None,
-                )
+            # Build a state with a known board
+            from random import Random
 
-                # Build a state with a known board
-                from random import Random
+            rng = Random(5)
+            board = create_board(rng=rng)
 
-                rng = Random(5)
-                board = create_board(rng=rng)
+            # Find first red word on the board
+            red_words = [
+                w for w, c in zip(board.words, board.key_grid) if c == "Red"
+            ]
 
-                # Find first red word on the board
-                red_words = [
-                    w for w, c in zip(board.words, board.key_grid) if c == "Red"
-                ]
-                # Mock guesser returns first red word
-                mock_instance.guess.return_value = [(red_words[0], "seems related")]
+            state = {
+                "info": {
+                    "words": board.words,
+                    "key_grid": board.key_grid,
+                },
+                "extras": {},
+            }
+            state = await env.setup_state(state)
 
-                state = {
-                    "info": {
-                        "words": board.words,
-                        "key_grid": board.key_grid,
-                    },
-                    "timing": {
-                        "generation_ms": 0.0,
-                        "scoring_ms": 0.0,
-                        "total_ms": 0.0,
-                    },
-                }
-                state = await env.setup_state(state)
+            # Simulate cluegiver turn
+            xml_response = (
+                f"<reasoning>\nTESTING is a good clue for {red_words[0]}.\n</reasoning>\n"
+                f"<clue>\nword: TESTING\nnumber: 1\nwords: {red_words[0]}\n</clue>"
+            )
+            env._process_cluegiver_turn(xml_response, state)
 
-                # Simulate a model response with XML output
-                xml_response = (
-                    f"<reasoning>\nTESTING is a good clue for {red_words[0]}.\n</reasoning>\n"
-                    f"<clue>\nword: TESTING\nnumber: 1\nwords: {red_words[0]}\n</clue>"
-                )
-                messages = [
-                    {"role": "user", "content": "Current board:\n..."},
-                    {"role": "assistant", "content": xml_response},
-                ]
+            # Clue parsed successfully, game should NOT be over yet
+            self.assertFalse(state["game_over"])
+            self.assertEqual(state["last_clue"]["word"], "TESTING")
+            self.assertEqual(state["last_clue"]["number"], 1)
+            self.assertEqual(state["target_words"], [red_words[0]])
 
-                result = await env.env_response(messages, state)
+            # Simulate guesser turn — guess the target red word
+            guesser_response = f"{red_words[0]}: seems related\nSTOP"
+            env._process_guesser_turn(guesser_response, state)
 
-                self.assertTrue(state["game_over"])
-                # result is a list of message dicts
-                self.assertIsInstance(result, list)
-                transcript = result[0]["content"]
-                self.assertIn("Red found:", transcript)
-                self.assertIn("Called shots hit:", transcript)
+            self.assertTrue(state["game_over"])
 
-                reward = await game_reward(state=state)
-                assassin = await assassin_metric(state=state)
-                red_found = await red_found_metric(state=state)
+            reward = await game_reward(state=state)
+            assassin = await assassin_metric(state=state)
+            red_found = await red_found_metric(state=state)
 
-                self.assertIsInstance(reward, float)
-                self.assertGreater(reward, 0.0)
-                self.assertEqual(assassin, 0.0)
-                self.assertEqual(red_found, 1.0)
+            self.assertIsInstance(reward, float)
+            self.assertGreater(reward, 0.0)
+            self.assertEqual(assassin, 0.0)
+            self.assertEqual(red_found, 1.0)
 
-                # Shot calling: we targeted the word the mock guesser returns
-                self.assertEqual(state["shots_hit"], 1)
-                self.assertEqual(state["target_words"], [red_words[0]])
+            # Shot calling: we targeted the word the guesser guessed
+            self.assertEqual(state["shots_hit"], 1)
+            self.assertEqual(state["target_words"], [red_words[0]])
 
         asyncio.run(run())
 
-    def test_env_response_missing_clue_block(self) -> None:
-        """env_response handles missing <clue> block gracefully."""
+    def test_cluegiver_missing_clue_block(self) -> None:
+        """_process_cluegiver_turn handles missing <clue> block gracefully."""
 
         async def run() -> None:
-            from codenames.codenames import CodenamesCluegiverEnv
+            from codenames.codenames import CodenamesEnv
             from codenames.game import create_board
 
-            with patch("codenames.codenames.LLMGuesser"):
-                from datasets import Dataset
+            from datasets import Dataset
 
-                dummy_ds = Dataset.from_list(
-                    [{"prompt": [], "info": {}, "answer": "", "task": "test"}]
-                )
-                env = CodenamesCluegiverEnv(
-                    dataset=dummy_ds,
-                    eval_dataset=dummy_ds,
-                    rubric=None,
-                )
+            dummy_ds = Dataset.from_list(
+                [{"prompt": [], "info": {}, "answer": "", "task": "test"}]
+            )
+            env = CodenamesEnv(
+                dataset=dummy_ds,
+                eval_dataset=dummy_ds,
+                rubric=None,
+            )
 
-                from random import Random
+            from random import Random
 
-                rng = Random(5)
-                board = create_board(rng=rng)
+            rng = Random(5)
+            board = create_board(rng=rng)
 
-                state = {
-                    "info": {
-                        "words": board.words,
-                        "key_grid": board.key_grid,
-                    },
-                    "timing": {
-                        "generation_ms": 0.0,
-                        "scoring_ms": 0.0,
-                        "total_ms": 0.0,
-                    },
-                }
-                state = await env.setup_state(state)
+            state = {
+                "info": {
+                    "words": board.words,
+                    "key_grid": board.key_grid,
+                },
+                "extras": {},
+            }
+            state = await env.setup_state(state)
 
-                # Model response without proper XML
-                messages = [
-                    {"role": "user", "content": "Current board:\n..."},
-                    {"role": "assistant", "content": "I think EAGLE is a good clue."},
-                ]
+            # Cluegiver output without proper XML
+            env._process_cluegiver_turn("I think EAGLE is a good clue.", state)
 
-                result = await env.env_response(messages, state)
-
-                self.assertTrue(state["game_over"])
-                self.assertIn("<clue>", result[0]["content"])
+            self.assertTrue(state["game_over"])
+            self.assertEqual(state["shots_hit"], 0)
+            self.assertEqual(state["target_words"], [])
 
         asyncio.run(run())
 

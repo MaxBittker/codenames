@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-import os
 import re
 from random import Random
 from typing import Any
 
 import verifiers as vf
 from datasets import Dataset
-from openai import AsyncOpenAI
 
+from .multiagent import Agent, MultiAgentEnv, RoundRobinProtocol
 from .game import (
     count_remaining,
     create_board,
     evaluate_guess,
     format_board_for_cluegiver,
+    format_board_for_guesser,
 )
-from .types import BoardConfig, BoardSamplingConfig, BoardState, GuessResult
+from .types import BoardSamplingConfig, BoardState, GuessResult
 
 
 CLUEGIVER_SYSTEM_PROMPT = """You are a Codenames codemaster (cluegiver). You are cooperating with a guesser to reveal RED words on the board. You can see both the visible board words and the secret key (which words are RED, BLUE, or ASSASSIN). Use that information to give safe, useful single-word clues that connect RED words while avoiding clues that might point the guesser to BLUE or ASSASSIN words.
@@ -64,121 +64,64 @@ GUESSER_SYSTEM_PROMPT = """You are a Codenames guesser. You are cooperating with
 
 You can see the board but NOT the secret colors. Every word is either Red, Blue, or the Assassin. The cluegiver gave you a one-word clue and a number. The number tells you how many board words relate to that clue. You may guess up to (number + 1) words.
 
+Required output format (strict — follow exactly):
+- You SHOULD include a brief <reasoning> ... </reasoning> block to think through your guesses. Consider: which words connect to the clue, which words the cluegiver would AVOID connecting to (those are likely Blue or Assassin), and your confidence level for each candidate.
+- Your reply MUST contain a <guesses> ... </guesses> block.
+- Inside <guesses>, list one guess per line as WORD: reason.
+- Say STOP on its own line to end early (before using all allowed guesses).
 - Start with the word you're MOST confident about.
 - Stop early if you're unsure — hitting the Assassin loses the game.
-- Consider what words the cluegiver would AVOID connecting to (those are likely Blue or Assassin).
-
-For each guess, reply with the word followed by a colon and a brief reason. Say STOP on its own line to end early.
 
 Example:
+<reasoning>
+The clue "orchard" for 2 suggests fruit trees. APPLE and TREE are strong matches. BARN could be related but feels risky — it might be Blue.
+</reasoning>
+<guesses>
 APPLE: fruit connects to the clue "orchard"
 TREE: also found in an orchard
-STOP"""
+STOP
+</guesses>
+
+The <guesses> block must be exact and machine-parseable. Do not include extra commentary outside the tagged blocks."""
 
 GUESS_LINE_RE = re.compile(r"^([A-Za-z]+)\s*:\s*(.+)$")
 
 
-def _read_prime_config() -> tuple[str | None, str | None]:
-    """Read inference URL and API key from the prime CLI config."""
-    try:
-        from prime_cli.core.config import Config
-        cfg = Config()
-        return cfg.inference_url, cfg.api_key
-    except Exception:
-        return None, None
+def parse_guesses(
+    text: str, unrevealed_words: list[str], max_guesses: int,
+) -> list[tuple[str, str]]:
+    """Parse ``WORD: reason`` lines from guesser output.
 
+    First tries to extract from a ``<guesses>`` XML block. Falls back to
+    parsing the raw text for backward compatibility.
 
-# ---------------------------------------------------------------------------
-# LLM Guesser
-# ---------------------------------------------------------------------------
+    Returns a list of (word, reason) tuples.  Stops at ``STOP``, invalid
+    lines, duplicate words, or *max_guesses* reached.
+    """
+    # Try to extract from <guesses> block first
+    parsed = guesser_parser.parse(text)
+    guesses_block = parsed.guesses
+    if guesses_block:
+        text = guesses_block
 
-
-class LLMGuesser:
-    """Simulates the guesser role using a separate LLM call."""
-
-    def __init__(
-        self,
-        model: str = "openai/gpt-4.1-mini",
-        api_base: str | None = None,
-        api_key: str | None = None,
-        max_completion_tokens: int = 16_000,
-        temperature: float | None = 0.0,
-    ):
-        resolved_base, resolved_key = api_base, api_key
-
-        # Fall back to OPENAI_API_KEY env var (uses default OpenAI base URL)
-        if not resolved_key:
-            resolved_key = os.environ.get("OPENAI_API_KEY")
-
-        # Fall back to prime CLI config only if no key found yet
-        if not resolved_key:
-            prime_base, prime_key = _read_prime_config()
-            resolved_key = prime_key
-            if not resolved_base:
-                resolved_base = prime_base
-
-        client_kwargs: dict[str, Any] = {}
-        if resolved_base:
-            client_kwargs["base_url"] = resolved_base
-        if resolved_key:
-            client_kwargs["api_key"] = resolved_key
-
-        self.client = AsyncOpenAI(**client_kwargs)
-        # Strip known provider prefixes (e.g. "openai/gpt-4.1-mini" -> "gpt-4.1-mini")
-        # but keep HuggingFace-style org/model names intact.
-        _PROVIDER_PREFIXES = ("openai/", "anthropic/", "google/")
-        lower = model.lower()
-        if any(lower.startswith(p) for p in _PROVIDER_PREFIXES):
-            self.model = model.split("/", 1)[-1]
-        else:
-            self.model = model
-        self.max_completion_tokens = max_completion_tokens
-        self.temperature = temperature
-
-    async def guess(
-        self, clue_word: str, max_guesses: int, unrevealed_words: list[str]
-    ) -> list[tuple[str, str]]:
-        """Return a list of (word, reason) tuples."""
-        word_list = ", ".join(unrevealed_words)
-        user_msg = (
-            f'Clue: "{clue_word}" for {max_guesses - 1}\n'
-            f"You may guess up to {max_guesses} words.\n\n"
-            f"Remaining words: {word_list}"
-        )
-
-        api_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": GUESSER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            "max_completion_tokens": self.max_completion_tokens,
-        }
-        if self.temperature is not None:
-            api_kwargs["temperature"] = self.temperature
-        response = await self.client.chat.completions.create(**api_kwargs)
-
-        text = (response.choices[0].message.content or "").strip()
-        unrevealed_upper = {w.upper() for w in unrevealed_words}
-
-        guesses: list[tuple[str, str]] = []
-        seen: set[str] = set()
-        for line in text.splitlines():
-            line = line.strip()
-            if line.upper() == "STOP":
-                break
-            match = GUESS_LINE_RE.match(line)
-            if not match:
-                continue
-            word = match.group(1).upper()
-            reason = match.group(2).strip()
-            if word in unrevealed_upper and word not in seen:
-                guesses.append((word, reason))
-                seen.add(word)
-            if len(guesses) >= max_guesses:
-                break
-
-        return guesses
+    unrevealed_upper = {w.upper() for w in unrevealed_words}
+    guesses: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if line.upper() == "STOP":
+            break
+        match = GUESS_LINE_RE.match(line)
+        if not match:
+            continue
+        word = match.group(1).upper()
+        reason = match.group(2).strip()
+        if word in unrevealed_upper and word not in seen:
+            guesses.append((word, reason))
+            seen.add(word)
+        if len(guesses) >= max_guesses:
+            break
+    return guesses
 
 
 # ---------------------------------------------------------------------------
@@ -269,44 +212,59 @@ def _parse_clue_block(text: str) -> tuple[str, int, list[str]]:
 # ---------------------------------------------------------------------------
 
 parser = vf.XMLParser(fields=["clue"])
+guesser_parser = vf.XMLParser(fields=["guesses"])
 
 
-class CodenamesCluegiverEnv(vf.MultiTurnEnv):
-    """Single-clue environment: the model gives one clue, an LLM guesser
-    guesses, and the rollout ends.  The reward reflects how many RED words the
-    guesser found from that single clue.
+class CodenamesEnv(MultiAgentEnv):
+    """Multi-agent Codenames environment.
 
-    The model outputs XML with <reasoning> and <clue> blocks.  ``max_turns=2``
-    so that turn 1 produces the model's XML output and at the start of turn 2
-    ``env_response`` parses the clue, runs the guesser, and sets
-    ``final_env_response`` to end the rollout.
+    Two agents with isolated conversation contexts:
+    - **cluegiver**: sees the board with color labels (RED/BLUE/ASSASSIN),
+      produces an XML ``<clue>`` block.
+    - **guesser**: sees only the word list (no colors) plus the parsed clue,
+      produces ``WORD: reason`` guesses.
+
+    ``RoundRobinProtocol`` gives one turn to each agent per rollout.
+    Setting ``guesser_trainable=True`` trains both agents (self-play);
+    otherwise only the cluegiver is trained and the guesser can be routed
+    to a separate model via ``guesser_model``.
     """
 
     def __init__(
         self,
-        guesser_model: str = "openai/gpt-4.1-mini",
-        guesser_api_base: str | None = None,
-        guesser_api_key: str | None = None,
-        guesser_max_tokens: int = 16_000,
-        guesser_temperature: float | None = 0.0,
+        guesser_trainable: bool = False,
+        guesser_model: str | None = None,
         max_turns: int = 2,
         **kwargs: Any,
     ):
-        self.guesser = LLMGuesser(
-            model=guesser_model,
-            api_base=guesser_api_base,
-            api_key=guesser_api_key,
-            max_completion_tokens=guesser_max_tokens,
-            temperature=guesser_temperature,
-        )
+        protocol = RoundRobinProtocol(["cluegiver", "guesser"])
         super().__init__(
+            protocol=protocol,
             max_turns=max_turns,
-            system_prompt=CLUEGIVER_SYSTEM_PROMPT,
             parser=parser,
             **kwargs,
         )
 
-    async def setup_state(self, state: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        self.register_agent(Agent(
+            id="cluegiver",
+            system_prompt=CLUEGIVER_SYSTEM_PROMPT,
+            is_trainable=True,
+        ))
+        self.register_agent(Agent(
+            id="guesser",
+            system_prompt=GUESSER_SYSTEM_PROMPT,
+            is_trainable=guesser_trainable,
+        ))
+
+        if guesser_model:
+            self.actor_models = {"guesser": guesser_model}
+
+    # ------------------------------------------------------------------
+    # State setup
+    # ------------------------------------------------------------------
+
+    async def setup_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        state = await super().setup_state(state)
         info = state.get("info", {})
         board = create_board(words=info.get("words"), key_grid=info.get("key_grid"))
         state["board"] = board.to_dict()
@@ -317,90 +275,118 @@ class CodenamesCluegiverEnv(vf.MultiTurnEnv):
         state["last_clue"] = None
         return state
 
-    async def env_response(self, messages: Any, state: dict[str, Any], **kwargs: Any) -> Any:
-        """Parse the model's XML output, validate the clue, run the guesser,
-        and set ``final_env_response`` to end the rollout."""
-        # Extract the model's last assistant message
-        last_content = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant":
-                last_content = msg.get("content", "")
-                break
+    # ------------------------------------------------------------------
+    # Agent prompts (isolated per agent — no shared context)
+    # ------------------------------------------------------------------
 
-        if not last_content:
-            result = [{"role": "user", "content": "No response received. Please provide a clue using the required XML format."}]
+    async def build_agent_prompt(self, agent_id: str, state: dict[str, Any]) -> list[dict[str, str]]:
+        agent = self.get_agent(agent_id)
+        board = BoardState.from_dict(state["board"])
+
+        if agent_id == "cluegiver":
+            board_text = format_board_for_cluegiver(board)
+            return [
+                {"role": "system", "content": agent.system_prompt},
+                {"role": "user", "content": f"Current board:\n{board_text}"},
+            ]
+
+        # guesser — only sees word list + clue, no colors
+        clue = state["last_clue"]
+        clue_word = clue["word"]
+        clue_number = clue["number"]
+        max_guesses = clue_number + 1
+        board_view = format_board_for_guesser(board)
+        user_msg = (
+            f'Clue: "{clue_word}" for {clue_number}\n'
+            f"You may guess up to {max_guesses} words.\n\n"
+            f"{board_view}"
+        )
+        return [
+            {"role": "system", "content": agent.system_prompt},
+            {"role": "user", "content": user_msg},
+        ]
+
+    # ------------------------------------------------------------------
+    # Turn processing
+    # ------------------------------------------------------------------
+
+    async def on_turn_complete(self, state: dict[str, Any]) -> None:
+        last_step = state["trajectory"][-1]
+        agent_id = last_step["extras"]["agent_id"]
+        last_content = _get_step_content(last_step)
+
+        if agent_id == "cluegiver":
+            self._process_cluegiver_turn(last_content, state)
+        elif agent_id == "guesser":
+            self._process_guesser_turn(last_content, state)
+
+    def _process_cluegiver_turn(self, text: str, state: dict[str, Any]) -> None:
+        """Parse and validate the cluegiver's XML output.
+
+        Stores the parsed clue in state on success, or sets game_over on failure
+        (which prevents the guesser turn from running).
+        """
+        state["cluegiver_output"] = text
+
+        if not text:
             state["game_over"] = True
             state["shots_hit"] = 0
             state["target_words"] = []
-            state["final_env_response"] = result
-            return result
+            return
 
-        # Parse XML fields
-        parsed = self.parser.parse(last_content)
+        parsed = self.parser.parse(text)
         clue_block = parsed.clue
 
         if not clue_block:
-            result = [{"role": "user", "content": "Could not find a <clue> block in your response. Please use the required XML format."}]
             state["game_over"] = True
             state["shots_hit"] = 0
             state["target_words"] = []
-            state["final_env_response"] = result
-            return result
+            return
 
-        # Parse the clue fields from the block
         try:
             clue_word, clue_number, target_words_raw = _parse_clue_block(clue_block)
-        except ValueError as exc:
-            result = [{"role": "user", "content": f"Invalid clue format: {exc}"}]
+        except ValueError:
             state["game_over"] = True
             state["shots_hit"] = 0
             state["target_words"] = []
-            state["final_env_response"] = result
-            return result
+            return
 
         board = BoardState.from_dict(state["board"])
         num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
 
-        # Validate the clue word
         try:
             clue_word = _validate_clue(clue_word, board)
-        except ValueError as exc:
-            result = [{"role": "user", "content": f"Invalid clue: {exc}"}]
+        except ValueError:
             state["game_over"] = True
             state["shots_hit"] = 0
             state["target_words"] = []
-            state["final_env_response"] = result
-            return result
+            return
 
         clue_number = max(1, min(int(clue_number), num_red))
         state["last_clue"] = {"word": clue_word, "number": clue_number}
 
-        # Store the called-shot target words (cap at clue_number)
         target_words = [w.upper().strip() for w in target_words_raw][:clue_number]
         state["target_words"] = target_words
 
-        unrevealed = [w for w, r in zip(board.words, board.revealed) if r is None]
+    def _process_guesser_turn(self, text: str, state: dict[str, Any]) -> None:
+        """Parse guesses, evaluate against board, update state."""
+        state["guesser_output"] = text
+        board = BoardState.from_dict(state["board"])
+        num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+        clue = state.get("last_clue", {})
+        clue_number = clue.get("number", 1)
         max_guesses = clue_number + 1
 
-        try:
-            guesses = await self.guesser.guess(clue_word, max_guesses, unrevealed)
-        except Exception as exc:
-            state["game_over"] = True
-            state["shots_hit"] = 0
-            result = [{"role": "user", "content": f"Guesser error: {exc}"}]
-            state["final_env_response"] = result
-            return result
+        unrevealed = [w for w, r in zip(board.words, board.revealed) if r is None]
+        guesses = parse_guesses(text, unrevealed, max_guesses)
 
         if not guesses:
+            state["total_red_found"] = 0
+            state["assassin_hit"] = False
+            state["blue_hit"] = False
             state["game_over"] = True
             state["shots_hit"] = 0
-            remaining = count_remaining(board, "Red")
-            result = [{"role": "user", "content": (
-                f'Guesser could not guess any word for "{clue_word}" {clue_number}. '
-                f"Red remaining: {remaining}/{num_red}."
-            )}]
-            state["final_env_response"] = result
-            return result
+            return
 
         results: list[tuple[GuessResult, str]] = []
         for word, reason in guesses:
@@ -415,23 +401,75 @@ class CodenamesCluegiverEnv(vf.MultiTurnEnv):
         state["blue_hit"] = any(r.type == "wrong" and r.color == "Blue" for r, _ in results)
         state["game_over"] = True
 
-        # Count how many called-shot targets were correctly guessed
+        target_words = state.get("target_words", [])
         correctly_guessed = {r.word for r, _ in results if r.type == "correct"}
         shots_hit = sum(1 for t in target_words if t in correctly_guessed)
         state["shots_hit"] = shots_hit
 
-        lines = [f"- {_format_guess_result(r)} — guesser reasoning: \"{reason}\"" for r, reason in results]
-        red_remaining = count_remaining(board, "Red")
-        transcript = (
-            f"Guesser guessed:\n"
-            + "\n".join(lines)
-            + f"\nRed found: {state['total_red_found']}/{num_red}, remaining: {red_remaining}/{num_red}."
-            + f"\nCalled shots hit: {shots_hit}/{len(target_words)}."
-        )
+        # Store for render_completion
+        state["guess_results"] = [(r, reason) for r, reason in results]
 
-        result = [{"role": "user", "content": transcript}]
-        state["final_env_response"] = result
-        return result
+    # ------------------------------------------------------------------
+    # Stop condition
+    # ------------------------------------------------------------------
+
+    @vf.stop
+    async def game_is_over(self, state: dict[str, Any]) -> bool:
+        return state.get("game_over", False)
+
+    # ------------------------------------------------------------------
+    # Completion rendering
+    # ------------------------------------------------------------------
+
+    async def render_completion(self, state: dict[str, Any]) -> None:
+        """Build a combined transcript showing both agents' turns and results."""
+        messages: list[dict[str, str]] = []
+
+        for step in state.get("trajectory", []):
+            agent_id = step.get("extras", {}).get("agent_id", "unknown")
+            for msg in step.get("completion", []):
+                content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+                messages.append({
+                    "role": "assistant",
+                    "content": f"[{agent_id}]\n{content}",
+                })
+
+        # Append results summary if guesser played
+        guess_results = state.get("guess_results")
+        if guess_results:
+            num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+            lines = [
+                f'- {_format_guess_result(r)} — reasoning: "{reason}"'
+                for r, reason in guess_results
+            ]
+            board = BoardState.from_dict(state["board"])
+            red_remaining = count_remaining(board, "Red")
+            target_words = state.get("target_words", [])
+            shots_hit = state.get("shots_hit", 0)
+            summary = (
+                "Results:\n"
+                + "\n".join(lines)
+                + f"\nRed found: {state['total_red_found']}/{num_red}, remaining: {red_remaining}/{num_red}."
+                + f"\nCalled shots hit: {shots_hit}/{len(target_words)}."
+            )
+            messages.append({"role": "user", "content": summary})
+
+        state["completion"] = messages
+
+
+# ---------------------------------------------------------------------------
+# Helpers (module-level)
+# ---------------------------------------------------------------------------
+
+
+def _get_step_content(step: dict[str, Any]) -> str:
+    """Extract text content from a trajectory step's completion."""
+    completion = step.get("completion", [])
+    if not completion:
+        return ""
+    last_msg = completion[-1]
+    content = last_msg.get("content", "") if isinstance(last_msg, dict) else getattr(last_msg, "content", "")
+    return str(content) if content else ""
 
 
 # ---------------------------------------------------------------------------
@@ -439,16 +477,58 @@ class CodenamesCluegiverEnv(vf.MultiTurnEnv):
 # ---------------------------------------------------------------------------
 
 
+def _count_tags(text: str, tag: str) -> tuple[int, int]:
+    """Count opening and closing occurrences of an XML tag."""
+    open_count = len(re.findall(rf"<{tag}[\s>]", text)) + text.count(f"<{tag}>")
+    # Deduplicate: re.findall catches `<tag ...>` but not `<tag>`; direct count catches `<tag>` but not `<tag ...>`
+    # Simpler: just count all occurrences of `<tag` followed by `>` or whitespace
+    open_count = len(re.findall(rf"<{re.escape(tag)}(?:\s|>)", text))
+    close_count = text.count(f"</{tag}>")
+    return open_count, close_count
+
+
+async def cluegiver_format_reward(state: dict[str, Any], **kwargs: Any) -> float:
+    """Check XML format of the cluegiver's output (stored in state).
+
+    Returns 1.0 for a single well-formed <clue> block, -1.0 if duplicate
+    tags are found (degenerate repetition), 0.0 otherwise.
+    """
+    text = state.get("cluegiver_output", "")
+    if not text:
+        return 0.0
+    open_count, close_count = _count_tags(text, "clue")
+    if open_count > 1 or close_count > 1:
+        return -1.0
+    parsed = parser.parse(text)
+    return 1.0 if parsed.clue else 0.0
+
+
+async def guesser_format_reward(state: dict[str, Any], **kwargs: Any) -> float:
+    """Check XML format of the guesser's output (stored in state).
+
+    Returns 1.0 for a single well-formed <guesses> block, -1.0 if duplicate
+    tags are found (degenerate repetition), 0.0 otherwise.
+    """
+    text = state.get("guesser_output", "")
+    if not text:
+        return 0.0
+    open_count, close_count = _count_tags(text, "guesses")
+    if open_count > 1 or close_count > 1:
+        return -1.0
+    parsed = guesser_parser.parse(text)
+    return 1.0 if parsed.guesses else 0.0
+
+
 async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
     """Single-clue reward — per-card additive scoring, normalized to max 2.0.
 
-    - Assassin hit  → -1.0
-    - Each red found → +2.0 / num_red
-    - Blue hit      → -1.0 / num_red  (half the per-red value)
+    - Assassin hit  -> -3.0
+    - Each red found -> +2.0 / num_red
+    - Blue hit      -> -1.0 / num_red  (half the per-red value)
     """
     num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
     if state.get("assassin_hit", False):
-        return -1.0
+        return -3.0
     per_red = 2.0 / num_red
     reward = state.get("total_red_found", 0) * per_red
     if state.get("blue_hit", False):
@@ -469,16 +549,6 @@ async def shot_calling_reward(state: dict[str, Any], **kwargs: Any) -> float:
     num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
     shots_hit = state.get("shots_hit", 0)
     return shots_hit / num_red
-
-
-async def ambition_reward(state: dict[str, Any], **kwargs: Any) -> float:
-    """Continuous reward that incentivizes multi-target clues.
-
-    number=1 → -1.0, number=2 → 0.0, number≥3 → +1.0 (capped).
-    At weight 0.5: number=1 costs -0.5, number≥3 earns +0.5.
-    """
-    clue_number = (state.get("last_clue") or {}).get("number", 1)
-    return float(max(-1.0, min(1.0, clue_number - 2)))
 
 
 async def assassin_metric(state: dict[str, Any], **kwargs: Any) -> float:
@@ -508,10 +578,6 @@ def load_environment(
     eval_size: int = 200,
     seed: int = 0,
     guesser_model: str = "openai/gpt-4.1-mini",
-    guesser_api_base: str | None = None,
-    guesser_api_key: str | None = None,
-    guesser_max_tokens: int = 16_000,
-    guesser_temperature: float | None = 0.0,
     self_play: bool = False,
     max_turns: int = 2,
     min_board_size: int = 4,
@@ -530,31 +596,22 @@ def load_environment(
         train_size=train_size, eval_size=eval_size, seed=seed, sampling=sampling,
     )
 
-    format_reward = parser.get_format_reward_func()
     rubric = vf.Rubric(
         funcs=[
-            game_reward, shot_calling_reward, ambition_reward, format_reward,
+            game_reward, shot_calling_reward,
+            cluegiver_format_reward, guesser_format_reward,
             assassin_metric, red_found_metric, shots_hit_metric, clue_number_metric,
         ],
-        weights=[1.0, 0.5, 0.5, 0.1, 0.0, 0.0, 0.0, 0.0],
+        weights=[1.0, 0.5, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0],
         parser=parser,
     )
 
-    if self_play:
-        # No explicit API key/base — falls through to prime config,
-        # which points at the training inference server.
-        guesser_api_base = None
-        guesser_api_key = None
-
-    return CodenamesCluegiverEnv(
+    return CodenamesEnv(
         dataset=dataset,
         eval_dataset=eval_dataset,
         rubric=rubric,
-        guesser_model=guesser_model,
-        guesser_max_tokens=guesser_max_tokens,
-        guesser_temperature=guesser_temperature,
-        guesser_api_base=guesser_api_base,
-        guesser_api_key=guesser_api_key,
+        guesser_trainable=self_play,
+        guesser_model=None if self_play else guesser_model,
         max_turns=max_turns,
         **kwargs,
     )

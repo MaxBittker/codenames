@@ -1,0 +1,27 @@
+model = "Qwen/Qwen3-4B-Instruct-2507"
+env_files = ["../../.env"]
+max_steps = 152
+batch_size = 2048
+rollouts_per_example = 16
+
+# Warm-start from the clean step 150 checkpoint (zero repetition, best eval score)
+checkpoint_id = "hj7a4krp4jac65gj1azdny5f"
+
+[sampling]
+max_tokens = 4096
+
+[[env]]
+id = "maxbittker/codenames"
+args = { train_size = 100000, eval_size = 500, self_play = true }
+
+[wandb]
+project = "codenames"
+name = "qwen3-4b-i-adapter-from-step150"
+entity = "maxbittker-websim"
+
+[adapters]
+interval = 1
+keep_last = -1
+
+[infrastructure]
+compute_size = "S"

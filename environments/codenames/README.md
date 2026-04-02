@@ -1,16 +1,16 @@
 # codenames
 
-PrimeIntellect `verifiers` environment for cooperative Codenames.
+Multi-agent `verifiers` environment for cooperative Codenames.
 
-The model gives a single clue via the `give_clue` tool. An LLM guesser
-(default: `openai/gpt-5.4-nano`) resolves the turn, and the reward reflects how
-many RED words the guesser found from that one clue.
+Two agents — a **cluegiver** and a **guesser** — cooperate to find RED words on a board. The cluegiver sees the full color key and gives a one-word clue linking target RED words. The guesser sees only the word list (no colors) and guesses based on the clue. Both agents are trained together.
+
+Board size and color ratios are sampled randomly per game, controlled by the sampling config.
 
 ## Quickstart
 
 ```bash
-uv pip install -e ./environments/codenames
-prime eval run codenames -m openai/gpt-5.4-nano -n 20 -r 2
+prime env install codenames
+prime eval run codenames -m openai/gpt-4.1-mini -n 20 -r 2
 ```
 
 ## Environment Args
@@ -20,19 +20,24 @@ prime eval run codenames -m openai/gpt-5.4-nano -n 20 -r 2
 | `train_size` | `int` | `800` | Number of generated train boards |
 | `eval_size` | `int` | `200` | Number of generated eval boards |
 | `seed` | `int` | `0` | Base seed for deterministic board generation |
-| `guesser_model` | `str` | `openai/gpt-5.4-nano` | Model used as the simulated guesser |
-| `guesser_api_base` | `str \| None` | `None` | API base URL for the guesser (defaults to prime config) |
-| `guesser_api_key` | `str \| None` | `None` | API key for the guesser (defaults to prime config) |
-| `max_turns` | `int` | `2` | Max turns per rollout (2 needed: clue + tool execution) |
+| `max_turns` | `int` | `2` | Max turns per rollout (1 cluegiver + 1 guesser) |
+| `min_board_size` | `int` | `4` | Minimum number of words on the board |
+| `max_board_size` | `int` | `16` | Maximum number of words on the board |
+| `min_red_ratio` | `float` | `0.3` | Minimum fraction of board words that are RED |
+| `max_red_ratio` | `float` | `0.6` | Maximum fraction of board words that are RED |
 
 ## Reward
 
-- Assassin hit → **-1.0**
-- Blue hit → `red_found / 8 - 0.125`
-- Otherwise → `red_found / 8`
+| Component | Weight | Description |
+| --------- | ------ | ----------- |
+| `game_reward` | 1.0 | Assassin hit: **-1.0**. Otherwise: `+2/num_red` per red found, `-1/num_red` for blue hit |
+| `shot_calling_reward` | 0.5 | `shots_hit / num_red` — bonus for the guesser finding the cluegiver's declared targets |
+| `cluegiver_format_reward` | 0.1 | 1.0 if cluegiver output contains a valid `<clue>` block |
+| `guesser_format_reward` | 0.1 | 1.0 if guesser output contains a valid `<guesses>` block |
 
 ## Metrics
 
-- `game_reward`: main scalar reward
 - `assassin_metric`: whether the assassin was hit
 - `red_found_metric`: number of red words found
+- `shots_hit_metric`: number of declared target words correctly guessed
+- `clue_number_metric`: how many words the cluegiver targeted with the clue

@@ -1,15 +1,15 @@
-model = "Qwen/Qwen3-4B-Instruct-2507"
+model = "Qwen/Qwen3.5-9B"
 env_files = ["../../.env"]
 max_steps = 250
-batch_size = 1024
+batch_size = 2048
 rollouts_per_example = 16
 
 [sampling]
-max_tokens = 2048
+max_tokens = 4096
 
 [[env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, guesser_model = "openai/gpt-4.1-mini" }
+args = { train_size = 100000, eval_size = 500, self_play = true }
 
 [eval]
 interval = 25
@@ -18,15 +18,19 @@ rollouts_per_example = 4
 
 [[eval.env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, guesser_model = "openai/gpt-4.1-mini" }
+args = { train_size = 100000, eval_size = 500, self_play = true }
 
 [wandb]
 project = "codenames"
-name = "qwen3-4b-i-xml-v8-ambition"
+name = "qwen3.5-9b-selfplay-assassin-penalty"
 entity = "maxbittker-websim"
 
 [checkpoints]
-interval = 50
+interval = 25
+
+[adapters]
+interval = 25
+keep_last = -1
 
 [infrastructure]
-compute_size = "L"
+compute_size = "S"
