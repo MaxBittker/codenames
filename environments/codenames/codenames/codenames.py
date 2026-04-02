@@ -18,18 +18,23 @@ from .game import (
 from .types import BoardSamplingConfig, BoardState, GuessResult
 
 
-CLUEGIVER_SYSTEM_PROMPT = """You are a Codenames codemaster (cluegiver). You are cooperating with a guesser to reveal RED words on the board. You can see both the visible board words and the secret key (which words are RED, BLUE, or ASSASSIN). Use that information to give safe, useful single-word clues that connect RED words while avoiding clues that might point the guesser to BLUE or ASSASSIN words.
+CLUEGIVER_SYSTEM_PROMPT = """You are a Codenames codemaster (cluegiver). Your goal is to help a guesser find ALL red words on the board. You can see the full board: which words are RED, BLUE, or ASSASSIN.
+
+There is no opposing team. Blue words stay on the board as hazards. The game is played over multiple rounds. Each round you give one clue, the guesser guesses, and then you see updated results. The game ends when:
+- All red words are found (WIN)
+- The assassin is hit (LOSS)
+- A blue word is guessed (turn ends, next round continues)
 
 Required output format (strict — follow exactly):
 - Your reply MUST contain a <clue> ... </clue> block.
-- You SHOULD include a brief <reasoning> ... </reasoning> block before <clue>, but keep it very concise (2-4 sentences max). Long reasoning wastes tokens without improving clue quality. Focus on: which RED words you're connecting, why the clue avoids BLUE/ASSASSIN words.
+- You SHOULD include a brief <reasoning> ... </reasoning> block before <clue>, but keep it very concise (2-4 sentences max). Focus on: which RED words you're connecting, why the clue avoids BLUE/ASSASSIN words.
 - The <clue> block must use this exact three-line field format (all three fields required):
     word: YOUR_CLUE
     number: N
     words: TARGET1, TARGET2, ...
   - 'word:' — the single-word clue (see clue rules below)
   - 'number:' — an integer equal to the number of TARGET words you list
-  - 'words:' — a comma-separated list of the exact RED board words you intend the guesser to pick (must be actual RED words on the board)
+  - 'words:' — a comma-separated list of the exact RED board words you intend the guesser to pick (must be actual RED words still on the board)
 
 Clue rules (hard constraints you must enforce):
 - The clue MUST be a single token/word with no spaces and no hyphens. (e.g., "piano" allowed; "piano-player" or "piano player" not allowed.)
@@ -45,24 +50,25 @@ Safety and avoidance rules:
 - If a candidate clue risks pointing to a BLUE or ASSASSIN word (strong, plausible association), discard it and choose a safer clue even if it links fewer RED words.
 
 Strategy guidance:
-- Aim to connect multiple RED words — linking 2+ words per clue is the key to winning efficiently.
+- Aim to connect multiple RED words — linking 2+ words per clue lets you win in fewer rounds.
 - Seek clear, common semantic links (category membership, shared attributes, common compound phrases, clear functional relationships, widely-known cultural references).
-- Consider the guesser's perspective — avoid highly idiosyncratic or ambiguous connections that could plausibly be interpreted as pointing to BLUE/ASSASSIN words.
-- Check for homonyms or word senses that might accidentally match BLUE/ASSASSIN words; avoid them.
-- If a clue could be reasonably taken to mean a BLUE word, discard it.
+- Consider the guesser's perspective — avoid ambiguous connections that could point to BLUE/ASSASSIN words.
+- You want to finish the game in as few rounds as possible. Ambitious clues (connecting 3+ words) are valuable if they're safe.
 
 Validation checklist (before replying):
 - Does <clue> include 'word:', 'number:', and 'words:' exactly?
 - Is 'number:' equal to the count of words listed in 'words:'?
-- Are all listed targets actual RED words on the board?
+- Are all listed targets actual RED words still on the board?
 - Is the clue a single word ≤15 characters, not a substring/morph of any board word, and not identical to a board word?
 - Does the clue avoid strong associations with BLUE and ASSASSIN words?
 
 The <clue> block must be exact and machine-parseable. Do not include extra commentary, tables, or formatting outside the tagged blocks."""
 
-GUESSER_SYSTEM_PROMPT = """You are a Codenames guesser. You are cooperating with a cluegiver to find RED words.
+GUESSER_SYSTEM_PROMPT = """You are a Codenames guesser. You are cooperating with a cluegiver to find ALL red words on the board.
 
-You can see the board but NOT the secret colors. Every word is either Red, Blue, or the Assassin. The cluegiver gave you a one-word clue and a number. The number tells you how many board words relate to that clue. You may guess up to (number + 1) words.
+You can see the remaining words but NOT their colors. Every word is Red, Blue, or the Assassin. The cluegiver gave you a one-word clue and a number. The number tells you how many board words relate to that clue. You may guess up to (number + 1) words.
+
+There is no opposing team. The game plays over multiple rounds. Each round you get a new clue. The game ends when all reds are found (win) or the assassin is hit (loss). Guessing a blue word ends your turn but the game continues.
 
 Required output format (strict — follow exactly):
 - You SHOULD include a brief <reasoning> ... </reasoning> block to think through your guesses. Consider: which words connect to the clue, which words the cluegiver would AVOID connecting to (those are likely Blue or Assassin), and your confidence level for each candidate.
@@ -70,11 +76,11 @@ Required output format (strict — follow exactly):
 - Inside <guesses>, list one guess per line as WORD: reason.
 - Say STOP on its own line to end early (before using all allowed guesses).
 - Start with the word you're MOST confident about.
-- Stop early if you're unsure — hitting the Assassin loses the game.
+- Stop early if you're unsure — hitting the Assassin loses the game instantly.
 
 Example:
 <reasoning>
-The clue "orchard" for 2 suggests fruit trees. APPLE and TREE are strong matches. BARN could be related but feels risky — it might be Blue.
+The clue "orchard" for 2 suggests fruit trees. APPLE and TREE are strong matches. BARN could be related but feels risky — it might be Blue or the Assassin.
 </reasoning>
 <guesses>
 APPLE: fruit connects to the clue "orchard"
@@ -216,25 +222,24 @@ guesser_parser = vf.XMLParser(fields=["guesses"])
 
 
 class CodenamesEnv(MultiAgentEnv):
-    """Multi-agent Codenames environment.
+    """Multi-turn Codenames environment.
 
-    Two agents with isolated conversation contexts:
+    Two agents with isolated conversation contexts play multiple rounds
+    until all red words are found (win) or the assassin is hit (loss):
     - **cluegiver**: sees the board with color labels (RED/BLUE/ASSASSIN),
       produces an XML ``<clue>`` block.
-    - **guesser**: sees only the word list (no colors) plus the parsed clue,
+    - **guesser**: sees only the remaining word list plus the parsed clue,
       produces ``WORD: reason`` guesses.
 
-    ``RoundRobinProtocol`` gives one turn to each agent per rollout.
-    Setting ``guesser_trainable=True`` trains both agents (self-play);
-    otherwise only the cluegiver is trained and the guesser can be routed
-    to a separate model via ``guesser_model``.
+    No opposing team — blue cards are hazards (end the turn, not the game).
+    The game loops cluegiver→guesser→cluegiver→... until terminal.
     """
 
     def __init__(
         self,
         guesser_trainable: bool = False,
         guesser_model: str | None = None,
-        max_turns: int = 2,
+        max_turns: int = 30,
         **kwargs: Any,
     ):
         protocol = RoundRobinProtocol(["cluegiver", "guesser"])
@@ -270,9 +275,13 @@ class CodenamesEnv(MultiAgentEnv):
         state["board"] = board.to_dict()
         state["total_red_found"] = 0
         state["assassin_hit"] = False
-        state["blue_hit"] = False
+        state["blue_hit_count"] = 0
         state["game_over"] = False
         state["last_clue"] = None
+        state["round_number"] = 0
+        state["round_history"] = []  # list of {clue, results} per round
+        state["total_shots_hit"] = 0
+        state["all_target_words"] = []
         return state
 
     # ------------------------------------------------------------------
@@ -282,12 +291,26 @@ class CodenamesEnv(MultiAgentEnv):
     async def build_agent_prompt(self, agent_id: str, state: dict[str, Any]) -> list[dict[str, str]]:
         agent = self.get_agent(agent_id)
         board = BoardState.from_dict(state["board"])
+        round_history = state.get("round_history", [])
+        num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
 
         if agent_id == "cluegiver":
             board_text = format_board_for_cluegiver(board)
+            parts = []
+            if round_history:
+                parts.append(f"Round {state['round_number'] + 1}. Red found so far: {state['total_red_found']}/{num_red}.")
+                parts.append("")
+                parts.append("Previous rounds:")
+                for rnd in round_history:
+                    clue_info = rnd["clue"]
+                    results_lines = [f"  {_format_guess_result(r)}" for r in rnd["results"]]
+                    parts.append(f"  Clue: \"{clue_info['word']}\" for {clue_info['number']}")
+                    parts.extend(results_lines)
+                parts.append("")
+            parts.append(f"Current board:\n{board_text}")
             return [
                 {"role": "system", "content": agent.system_prompt},
-                {"role": "user", "content": f"Current board:\n{board_text}"},
+                {"role": "user", "content": "\n".join(parts)},
             ]
 
         # guesser — only sees word list + clue, no colors
@@ -296,14 +319,24 @@ class CodenamesEnv(MultiAgentEnv):
         clue_number = clue["number"]
         max_guesses = clue_number + 1
         board_view = format_board_for_guesser(board)
-        user_msg = (
-            f'Clue: "{clue_word}" for {clue_number}\n'
-            f"You may guess up to {max_guesses} words.\n\n"
-            f"{board_view}"
-        )
+        parts = []
+        if round_history:
+            parts.append(f"Round {state['round_number']}. Red found so far: {state['total_red_found']}/{num_red}.")
+            parts.append("")
+            parts.append("Previous rounds:")
+            for rnd in round_history:
+                clue_info = rnd["clue"]
+                results_lines = [f"  {_format_guess_result(r)}" for r in rnd["results"]]
+                parts.append(f"  Clue: \"{clue_info['word']}\" for {clue_info['number']}")
+                parts.extend(results_lines)
+            parts.append("")
+        parts.append(f'Clue: "{clue_word}" for {clue_number}')
+        parts.append(f"You may guess up to {max_guesses} words.")
+        parts.append("")
+        parts.append(board_view)
         return [
             {"role": "system", "content": agent.system_prompt},
-            {"role": "user", "content": user_msg},
+            {"role": "user", "content": "\n".join(parts)},
         ]
 
     # ------------------------------------------------------------------
@@ -330,7 +363,6 @@ class CodenamesEnv(MultiAgentEnv):
 
         if not text:
             state["game_over"] = True
-            state["shots_hit"] = 0
             state["target_words"] = []
             return
 
@@ -339,7 +371,6 @@ class CodenamesEnv(MultiAgentEnv):
 
         if not clue_block:
             state["game_over"] = True
-            state["shots_hit"] = 0
             state["target_words"] = []
             return
 
@@ -347,29 +378,35 @@ class CodenamesEnv(MultiAgentEnv):
             clue_word, clue_number, target_words_raw = _parse_clue_block(clue_block)
         except ValueError:
             state["game_over"] = True
-            state["shots_hit"] = 0
             state["target_words"] = []
             return
 
         board = BoardState.from_dict(state["board"])
-        num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+        num_red_remaining = count_remaining(board, "Red")
 
         try:
             clue_word = _validate_clue(clue_word, board)
         except ValueError:
             state["game_over"] = True
-            state["shots_hit"] = 0
             state["target_words"] = []
             return
 
-        clue_number = max(1, min(int(clue_number), num_red))
+        clue_number = max(1, min(int(clue_number), num_red_remaining))
         state["last_clue"] = {"word": clue_word, "number": clue_number}
+        state["round_number"] = state.get("round_number", 0) + 1
 
         target_words = [w.upper().strip() for w in target_words_raw][:clue_number]
         state["target_words"] = target_words
+        state["all_target_words"].extend(target_words)
 
     def _process_guesser_turn(self, text: str, state: dict[str, Any]) -> None:
-        """Parse guesses, evaluate against board, update state."""
+        """Parse guesses, evaluate against board, update state.
+
+        In multi-turn mode, the game continues unless:
+        - Assassin is hit (loss)
+        - All reds are found (win)
+        - Guesser produces no valid guesses (format failure, ends game)
+        """
         state["guesser_output"] = text
         board = BoardState.from_dict(state["board"])
         num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
@@ -381,11 +418,9 @@ class CodenamesEnv(MultiAgentEnv):
         guesses = parse_guesses(text, unrevealed, max_guesses)
 
         if not guesses:
-            state["total_red_found"] = 0
+            # Format failure — end game
             state["assassin_hit"] = False
-            state["blue_hit"] = False
             state["game_over"] = True
-            state["shots_hit"] = 0
             return
 
         results: list[tuple[GuessResult, str]] = []
@@ -398,16 +433,28 @@ class CodenamesEnv(MultiAgentEnv):
         state["board"] = board.to_dict()
         state["total_red_found"] = num_red - count_remaining(board, "Red")
         state["assassin_hit"] = any(r.type == "assassin" for r, _ in results)
-        state["blue_hit"] = any(r.type == "wrong" and r.color == "Blue" for r, _ in results)
-        state["game_over"] = True
+        blue_this_round = any(r.type == "wrong" and r.color == "Blue" for r, _ in results)
+        if blue_this_round:
+            state["blue_hit_count"] = state.get("blue_hit_count", 0) + 1
 
         target_words = state.get("target_words", [])
         correctly_guessed = {r.word for r, _ in results if r.type == "correct"}
         shots_hit = sum(1 for t in target_words if t in correctly_guessed)
-        state["shots_hit"] = shots_hit
+        state["total_shots_hit"] = state.get("total_shots_hit", 0) + shots_hit
 
-        # Store for render_completion
-        state["guess_results"] = [(r, reason) for r, reason in results]
+        # Record round history
+        round_results = [r for r, _ in results]
+        state["round_history"].append({
+            "clue": state["last_clue"],
+            "results": round_results,
+            "target_words": target_words,
+        })
+
+        # Check terminal conditions
+        red_remaining = count_remaining(board, "Red")
+        if state["assassin_hit"] or red_remaining == 0:
+            state["game_over"] = True
+        # Otherwise game continues — next round
 
     # ------------------------------------------------------------------
     # Stop condition
@@ -422,7 +469,7 @@ class CodenamesEnv(MultiAgentEnv):
     # ------------------------------------------------------------------
 
     async def render_completion(self, state: dict[str, Any]) -> None:
-        """Build a combined transcript showing both agents' turns and results."""
+        """Build a combined transcript showing all rounds and final outcome."""
         messages: list[dict[str, str]] = []
 
         for step in state.get("trajectory", []):
@@ -434,25 +481,27 @@ class CodenamesEnv(MultiAgentEnv):
                     "content": f"[{agent_id}]\n{content}",
                 })
 
-        # Append results summary if guesser played
-        guess_results = state.get("guess_results")
-        if guess_results:
-            num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
-            lines = [
-                f'- {_format_guess_result(r)} — reasoning: "{reason}"'
-                for r, reason in guess_results
-            ]
-            board = BoardState.from_dict(state["board"])
-            red_remaining = count_remaining(board, "Red")
-            target_words = state.get("target_words", [])
-            shots_hit = state.get("shots_hit", 0)
-            summary = (
-                "Results:\n"
-                + "\n".join(lines)
-                + f"\nRed found: {state['total_red_found']}/{num_red}, remaining: {red_remaining}/{num_red}."
-                + f"\nCalled shots hit: {shots_hit}/{len(target_words)}."
-            )
-            messages.append({"role": "user", "content": summary})
+        # Append game summary
+        num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+        board = BoardState.from_dict(state["board"])
+        red_remaining = count_remaining(board, "Red")
+        rounds = state.get("round_history", [])
+
+        summary_lines = [f"=== Game Summary ({len(rounds)} rounds) ==="]
+        for i, rnd in enumerate(rounds, 1):
+            clue_info = rnd["clue"]
+            result_strs = [_format_guess_result(r) for r in rnd["results"]]
+            summary_lines.append(f"Round {i}: \"{clue_info['word']}\" for {clue_info['number']} → {', '.join(result_strs)}")
+
+        if state.get("assassin_hit"):
+            summary_lines.append(f"\nOUTCOME: LOSS (assassin hit)")
+        elif red_remaining == 0:
+            summary_lines.append(f"\nOUTCOME: WIN — all {num_red} reds found in {len(rounds)} rounds")
+        else:
+            summary_lines.append(f"\nOUTCOME: INCOMPLETE — {state['total_red_found']}/{num_red} reds found")
+
+        summary_lines.append(f"Total called shots hit: {state.get('total_shots_hit', 0)}/{len(state.get('all_target_words', []))}")
+        messages.append({"role": "user", "content": "\n".join(summary_lines)})
 
         state["completion"] = messages
 
@@ -520,39 +569,57 @@ async def guesser_format_reward(state: dict[str, Any], **kwargs: Any) -> float:
 
 
 async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
-    """Single-clue reward — per-card additive scoring, normalized to max 2.0.
+    """Multi-turn game reward.
 
-    - Assassin hit  -> -3.0
-    - Each red found -> +2.0 / num_red
-    - Blue hit      -> -1.0 / num_red  (half the per-red value)
+    - Assassin hit: -3.0
+    - Each red found: +2.0 / num_red
+    - Each blue hit: -0.5 * per_red penalty
     """
     num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
     if state.get("assassin_hit", False):
         return -3.0
     per_red = 2.0 / num_red
     reward = state.get("total_red_found", 0) * per_red
-    if state.get("blue_hit", False):
-        reward -= per_red * 0.5
+    reward -= state.get("blue_hit_count", 0) * per_red * 0.5
     return reward
 
 
-async def shot_calling_reward(state: dict[str, Any], **kwargs: Any) -> float:
-    """Bonus reward for correctly calling target words (absolute, not ratio).
+async def efficiency_reward(state: dict[str, Any], **kwargs: Any) -> float:
+    """Reward for winning in fewer rounds.
 
-    Returns shots_hit / num_red so that hitting more targets in absolute terms
-    is always better.  Calling 3 and hitting 3 (~0.5) beats calling 1 and
-    hitting 1 (~0.17).  Returns 0.0 if no targets were declared.
+    Only applies on wins. Returns 1.0 - (rounds_used - 1) / max_possible_rounds,
+    clamped to [0, 1]. Winning in 1 round = 1.0, winning in N rounds where
+    N = num_red = 0.0 (one word per round, worst efficiency).
     """
-    target_words = state.get("target_words", [])
-    if not target_words:
+    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+    board = BoardState.from_dict(state["board"])
+    red_remaining = count_remaining(board, "Red")
+    if red_remaining > 0:
+        return 0.0  # didn't win, no efficiency bonus
+    rounds = len(state.get("round_history", []))
+    if rounds <= 1:
+        return 1.0
+    # Linear scale: 1 round = 1.0, num_red rounds = 0.0
+    max_rounds = num_red  # worst case: one word per round
+    return max(0.0, 1.0 - (rounds - 1) / max(1, max_rounds - 1))
+
+
+async def shot_calling_reward(state: dict[str, Any], **kwargs: Any) -> float:
+    """Cumulative shot-calling accuracy across all rounds."""
+    all_targets = state.get("all_target_words", [])
+    if not all_targets:
         return 0.0
     num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
-    shots_hit = state.get("shots_hit", 0)
-    return shots_hit / num_red
+    total_shots_hit = state.get("total_shots_hit", 0)
+    return total_shots_hit / num_red
 
 
 async def assassin_metric(state: dict[str, Any], **kwargs: Any) -> float:
     return 1.0 if state.get("assassin_hit", False) else 0.0
+
+
+async def blue_hit_metric(state: dict[str, Any], **kwargs: Any) -> float:
+    return float(state.get("blue_hit_count", 0))
 
 
 async def red_found_metric(state: dict[str, Any], **kwargs: Any) -> float:
@@ -560,12 +627,27 @@ async def red_found_metric(state: dict[str, Any], **kwargs: Any) -> float:
 
 
 async def shots_hit_metric(state: dict[str, Any], **kwargs: Any) -> float:
-    return float(state.get("shots_hit", 0))
+    return float(state.get("total_shots_hit", 0))
 
 
-async def clue_number_metric(state: dict[str, Any], **kwargs: Any) -> float:
-    """Track the clue number (how many words targeted) for observability."""
-    return float((state.get("last_clue") or {}).get("number", 0))
+async def rounds_metric(state: dict[str, Any], **kwargs: Any) -> float:
+    """Track total rounds played."""
+    return float(len(state.get("round_history", [])))
+
+
+async def win_metric(state: dict[str, Any], **kwargs: Any) -> float:
+    """1.0 if all reds found, 0.0 otherwise."""
+    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+    return 1.0 if state.get("total_red_found", 0) >= num_red else 0.0
+
+
+async def avg_clue_number_metric(state: dict[str, Any], **kwargs: Any) -> float:
+    """Average clue number across all rounds."""
+    rounds = state.get("round_history", [])
+    if not rounds:
+        return 0.0
+    total = sum(rnd["clue"]["number"] for rnd in rounds)
+    return total / len(rounds)
 
 
 # ---------------------------------------------------------------------------
@@ -579,7 +661,7 @@ def load_environment(
     seed: int = 0,
     guesser_model: str = "openai/gpt-4.1-mini",
     self_play: bool = False,
-    max_turns: int = 2,
+    max_turns: int = 30,
     min_board_size: int = 4,
     max_board_size: int = 16,
     min_red_ratio: float = 0.3,
@@ -598,11 +680,12 @@ def load_environment(
 
     rubric = vf.Rubric(
         funcs=[
-            game_reward, shot_calling_reward,
+            game_reward, efficiency_reward, shot_calling_reward,
             cluegiver_format_reward, guesser_format_reward,
-            assassin_metric, red_found_metric, shots_hit_metric, clue_number_metric,
+            assassin_metric, blue_hit_metric, red_found_metric, shots_hit_metric,
+            rounds_metric, win_metric, avg_clue_number_metric,
         ],
-        weights=[1.0, 0.5, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0],
+        weights=[1.0, 0.5, 0.3, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         parser=parser,
     )
 

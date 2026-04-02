@@ -41,10 +41,12 @@ def create_board(
     config: BoardConfig | None = None,
 ) -> BoardState:
     cfg = config or BoardConfig()
+    final_words = [word.upper() for word in (words or select_words(rng=rng, count=cfg.board_size))]
+    final_key_grid = list(key_grid or generate_key_grid(rng=rng, config=cfg))
     return BoardState(
-        words=[word.upper() for word in (words or select_words(rng=rng, count=cfg.board_size))],
-        key_grid=list(key_grid or generate_key_grid(rng=rng, config=cfg)),
-        revealed=[None] * cfg.board_size,
+        words=final_words,
+        key_grid=final_key_grid,
+        revealed=[None] * len(final_words),
     )
 
 
@@ -97,7 +99,8 @@ def format_board_for_cluegiver(board: BoardState) -> str:
             assassin = word
 
     lines = [f"RED words to find ({len(red)} remaining): {', '.join(red)}"]
-    lines.append(f"BLUE words to AVOID: {', '.join(blue)}")
+    if blue:
+        lines.append(f"BLUE words to AVOID: {', '.join(blue)}")
     lines.append(f"ASSASSIN word to AVOID: {assassin}")
     return "\n".join(lines)
 

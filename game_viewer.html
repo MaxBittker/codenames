@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Codenames Game Viewer</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: #0d1117; color: #c9d1d9; font-size: 13px; }
+
+.topbar { background: #161b22; padding: 14px 24px; border-bottom: 1px solid #30363d; position: sticky; top: 0; z-index: 10; }
+.topbar h1 { font-size: 15px; font-weight: 600; color: #e6edf3; display: inline; }
+.topbar .scores { display: inline; margin-left: 24px; font-size: 12px; color: #8b949e; }
+.topbar .scores span { color: #e6edf3; font-weight: 600; }
+
+.board { padding: 10px 24px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; flex-wrap: wrap; gap: 5px; position: sticky; top: 48px; z-index: 9; }
+.card { padding: 3px 9px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.card.red { background: #3d1f1f; color: #f85149; border: 1px solid #f8514933; }
+.card.blue { background: #1f2d3d; color: #58a6ff; border: 1px solid #58a6ff33; }
+.card.assassin { background: #2d1f3d; color: #d2a8ff; border: 1px solid #d2a8ff33; }
+
+.outcome-banner { padding: 10px 24px; text-align: center; font-weight: 700; font-size: 14px; }
+.outcome-win { background: #1a2e1a; color: #3fb950; }
+.outcome-loss { background: #2e1a1a; color: #f85149; }
+
+.flow { max-width: 1100px; margin: 0 auto; padding: 24px 16px 80px 16px; }
+
+/* Each step is two side-by-side lanes */
+.step { display: flex; gap: 12px; }
+.lane { flex: 1; min-width: 0; padding: 0 4px; transition: opacity 0.2s; }
+.lane.dimmed { opacity: 0.15; }
+.lane.active { opacity: 1; }
+
+.agent-tag { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; padding: 3px 10px; border-radius: 4px; display: inline-block; }
+.cluegiver-tag { background: #f8514922; color: #f85149; }
+.guesser-tag { background: #58a6ff22; color: #58a6ff; }
+
+.block { margin: 6px 0; border-radius: 6px; padding: 10px 12px; }
+.block-label { font-size: 10px; font-weight: 700; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; }
+.prompt-block { background: #161b22; border: 1px solid #30363d; }
+.response-block { background: #1c2128; border: 1px solid #30363d; }
+.cluegiver-response { border-left: 3px solid #f85149; }
+.guesser-response { border-left: 3px solid #58a6ff; }
+.error-block { background: #2e1a1a; border: 1px solid #f8514933; color: #f85149; padding: 10px 12px; border-radius: 6px; }
+
+pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: 12px; line-height: 1.5; }
+
+.results { margin: 6px 0 4px 0; }
+.results span { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; margin: 2px; }
+.result-correct { background: #1a2e1a; color: #3fb950; }
+.result-wrong { background: #1f2d3d; color: #58a6ff; }
+.result-assassin { background: #2e1a1a; color: #f85149; }
+
+.arrow-row { text-align: center; padding: 8px 0; }
+.arrow { display: inline-block; font-size: 11px; color: #484f58; letter-spacing: 0.5px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+    <h1>Codenames — 4 rounds, 5/5 reds</h1>
+    <span class="scores">
+        reward: <span>1.60</span>
+        &nbsp; efficiency: <span>0.25</span>
+        &nbsp; blue_hits: <span>2</span>
+        &nbsp; avg_clue#: <span>1.8</span>
+    </span>
+</div>
+<div class="board"><span class="card red">ROW</span> <span class="card red">HOOK</span> <span class="card blue">GHOST</span> <span class="card blue">GRASS</span> <span class="card blue">BERRY</span> <span class="card red">SPY</span> <span class="card assassin">FENCE</span> <span class="card blue">JACK</span> <span class="card blue">KANGAROO</span> <span class="card blue">STOCK</span> <span class="card red">GRACE</span> <span class="card red">GROUND</span> </div>
+
+<div class="flow">
+    <div class="step" style="margin-bottom:12px;">
+        <div class="lane left" style="opacity:1;"><div class="agent-tag cluegiver-tag" style="font-size:12px;">Cluegiver (sees colors)</div></div>
+        <div class="lane right" style="opacity:1;"><div class="agent-tag guesser-tag" style="font-size:12px;">Guesser (words only)</div></div>
+    </div>
+    
+        <div class="step">
+            <div class="lane left active">
+                <div class="agent-tag cluegiver-tag">Cluegiver — Round 1</div>
+                <div class="block prompt-block">
+                    <div class="block-label">sees</div>
+                    <pre>Current board:
+RED words to find (5 remaining): ROW, HOOK, SPY, GRACE, GROUND
+BLUE words to AVOID: GHOST, GRASS, BERRY, JACK, KANGAROO, STOCK
+ASSASSIN word to AVOID: FENCE</pre>
+                </div>
+                <div class="block response-block cluegiver-response">
+                    <div class="block-label">responds</div>
+                    <pre>&lt;reasoning&gt;
+Linking ROW and GROUND together with &quot;earth&quot; because they relate to soil/land concepts. This clue avoids the BLUE words (GHOST, GRASS, BERRY, JACK, KANGAROO, STOCK) and ASSASSIN (FENCE), which have no strong association with &quot;earth.&quot; The other RED words are less clearly connected to this clue and can be targeted later.
+
+&lt;clue&gt;
+word: earth
+number: 2
+words: ROW, GROUND
+&lt;/clue&gt;</pre>
+                </div>
+            </div>
+            <div class="lane right dimmed"></div>
+        </div>
+        <div class="arrow-row"><div class="arrow">&#x25BC; passes clue</div></div>
+        
+            <div class="step">
+                <div class="lane left dimmed"></div>
+                <div class="lane right active">
+                    <div class="agent-tag guesser-tag">Guesser — Round 1</div>
+                    <div class="block prompt-block">
+                        <div class="block-label">sees</div>
+                        <pre>Clue: &quot;EARTH&quot; for 2
+You may guess up to 3 words.
+
+Remaining words: ROW, HOOK, GHOST, GRASS, BERRY, SPY, FENCE, JACK, KANGAROO, STOCK, GRACE, GROUND</pre>
+                    </div>
+                    <div class="block response-block guesser-response">
+                        <div class="block-label">responds</div>
+                        <pre>&lt;reasoning&gt;
+The clue &quot;EARTH&quot; strongly relates to words connected with soil, land, or the natural ground. &quot;GROUND&quot; is directly connected to earth, so it&#x27;s a very confident guess. &quot;GRASS&quot; also grows on earth and soil, making it a good candidate. &quot;BERRY&quot; grows from the earth as well, so it might be relevant, but I have slightly less confidence than the first two because it is more indirect. Other words like &quot;FENCE&quot; might relate to land but less directly, and &quot;STOCK&quot; could be agricultural, but less direct. I will guess GROUND and GRASS, and then STOP, to avoid risk of hitting Assassin or Blue.
+&lt;/reasoning&gt;
+&lt;guesses&gt;
+GROUND: directly connected to earth
+GRASS: grows on earth
+STOP
+&lt;/guesses&gt;</pre>
+                    </div>
+                    <div class="results"><span class="result-correct">GROUND → RED</span> <span class="result-wrong">GRASS → BLUE</span> </div>
+                </div>
+            </div>
+            <div class="arrow-row"><div class="arrow">&#x25BC; next round</div></div>
+        <div class="step">
+            <div class="lane left active">
+                <div class="agent-tag cluegiver-tag">Cluegiver — Round 2</div>
+                <div class="block prompt-block">
+                    <div class="block-label">sees</div>
+                    <pre>Round 2. Red found so far: 1/5.
+
+Previous rounds:
+  Clue: &quot;EARTH&quot; for 2
+  GROUND (Red!)
+  GRASS (Blue - turn over)
+
+Current board:
+RED words to find (4 remaining): ROW, HOOK, SPY, GRACE
+BLUE words to AVOID: GHOST, BERRY, JACK, KANGAROO, STOCK
+ASSASSIN word to AVOID: FENCE</pre>
+                </div>
+                <div class="block response-block cluegiver-response">
+                    <div class="block-label">responds</div>
+                    <pre>&lt;reasoning&gt;Hook and row can be connected by the theme of fishing (hook and row a boat). Spy and grace are harder but spy might be linked to stealth; however, including it risks confusion with ghost (blue). I&#x27;ll target just HOOK and ROW to avoid risking ghost or fence by picking fewer words. The clue &quot;Fishing&quot; clearly connects these two and is unrelated to blue/assassin words.&lt;/reasoning&gt;
+&lt;clue&gt;
+word: Fishing
+number: 2
+words: HOOK, ROW
+&lt;/clue&gt;</pre>
+                </div>
+            </div>
+            <div class="lane right dimmed"></div>
+        </div>
+        <div class="arrow-row"><div class="arrow">&#x25BC; passes clue</div></div>
+        
+            <div class="step">
+                <div class="lane left dimmed"></div>
+                <div class="lane right active">
+                    <div class="agent-tag guesser-tag">Guesser — Round 2</div>
+                    <div class="block prompt-block">
+                        <div class="block-label">sees</div>
+                        <pre>Round 2. Red found so far: 1/5.
+
+Previous rounds:
+  Clue: &quot;EARTH&quot; for 2
+  GROUND (Red!)
+  GRASS (Blue - turn over)
+
+Clue: &quot;FISHING&quot; for 2
+You may guess up to 3 words.
+
+Remaining words: ROW, HOOK, GHOST, BERRY, SPY, FENCE, JACK, KANGAROO, STOCK, GRACE</pre>
+                    </div>
+                    <div class="block response-block guesser-response">
+                        <div class="block-label">responds</div>
+                        <pre>&lt;reasoning&gt;
+The clue &quot;FISHING&quot; for 2 suggests words related to the act or gear of fishing. HOOK is a common fishing tool, very likely red. ROW could relate to rowing a boat, which is often done during fishing trips, making it a plausible red word. Other words like BERRY, GHOST, SPY, FENCE, JACK, KANGAROO, STOCK, and GRACE do not strongly connect to fishing and are less likely red. I am fairly confident on HOOK and reasonably confident on ROW. To avoid risk, I&#x27;ll stop after these two guesses.
+&lt;/reasoning&gt;
+&lt;guesses&gt;
+HOOK: fishing tool, very likely connected to &quot;FISHING&quot;
+ROW: related to rowing a boat, associated with fishing trips
+STOP
+&lt;/guesses&gt;</pre>
+                    </div>
+                    <div class="results"><span class="result-correct">HOOK → RED</span> <span class="result-correct">ROW → RED</span> </div>
+                </div>
+            </div>
+            <div class="arrow-row"><div class="arrow">&#x25BC; next round</div></div>
+        <div class="step">
+            <div class="lane left active">
+                <div class="agent-tag cluegiver-tag">Cluegiver — Round 3</div>
+                <div class="block prompt-block">
+                    <div class="block-label">sees</div>
+                    <pre>Round 3. Red found so far: 3/5.
+
+Previous rounds:
+  Clue: &quot;EARTH&quot; for 2
+  GROUND (Red!)
+  GRASS (Blue - turn over)
+  Clue: &quot;FISHING&quot; for 2
+  HOOK (Red!)
+  ROW (Red!)
+
+Current board:
+RED words to find (2 remaining): SPY, GRACE
+BLUE words to AVOID: GHOST, BERRY, JACK, KANGAROO, STOCK
+ASSASSIN word to AVOID: FENCE</pre>
+                </div>
+                <div class="block response-block cluegiver-response">
+                    <div class="block-label">responds</div>
+                    <pre>&lt;reasoning&gt;
+&quot;SPY&quot; and &quot;GRACE&quot; can be linked by the concept of &quot;Agent,&quot; as spies are agents and Grace can refer to famous Grace who was an agent or agent-like figure (e.g., Grace Kelly&#x27;s secretive allure). This clue avoids any strong links to blue words like &quot;Ghost,&quot; &quot;Jack,&quot; or the assassin &quot;Fence.&quot;
+&lt;/reasoning&gt;
+&lt;clue&gt;
+word: Agent
+number: 2
+words: SPY, GRACE
+&lt;/clue&gt;</pre>
+                </div>
+            </div>
+            <div class="lane right dimmed"></div>
+        </div>
+        <div class="arrow-row"><div class="arrow">&#x25BC; passes clue</div></div>
+        
+            <div class="step">
+                <div class="lane left dimmed"></div>
+                <div class="lane right active">
+                    <div class="agent-tag guesser-tag">Guesser — Round 3</div>
+                    <div class="block prompt-block">
+                        <div class="block-label">sees</div>
+                        <pre>Round 3. Red found so far: 3/5.
+
+Previous rounds:
+  Clue: &quot;EARTH&quot; for 2
+  GROUND (Red!)
+  GRASS (Blue - turn over)
+  Clue: &quot;FISHING&quot; for 2
+  HOOK (Red!)
+  ROW (Red!)
+
+Clue: &quot;AGENT&quot; for 2
+You may guess up to 3 words.
+
+Remaining words: GHOST, BERRY, SPY, FENCE, JACK, KANGAROO, STOCK, GRACE</pre>
+                    </div>
+                    <div class="block response-block guesser-response">
+                        <div class="block-label">responds</div>
+                        <pre>&lt;reasoning&gt;
+The clue &quot;AGENT&quot; strongly connects to SPY, as a spy is a type of agent. GHOST could be interpreted as a secretive or covert agent (like a &quot;ghost agent&quot;), so that might be the second red. JACK and STOCK do not clearly relate to &quot;AGENT.&quot; BERRY, FENCE, KANGAROO, and GRACE seem unrelated to the clue. SPY is the most confident guess, and GHOST is a plausible second. I will guess those two and stop early to avoid risk.
+&lt;/reasoning&gt;
+&lt;guesses&gt;
+SPY: directly related to &quot;agent&quot;
+GHOST: covert agent interpretation
+STOP
+&lt;/guesses&gt;</pre>
+                    </div>
+                    <div class="results"><span class="result-correct">SPY → RED</span> <span class="result-wrong">GHOST → BLUE</span> </div>
+                </div>
+            </div>
+            <div class="arrow-row"><div class="arrow">&#x25BC; next round</div></div>
+        <div class="step">
+            <div class="lane left active">
+                <div class="agent-tag cluegiver-tag">Cluegiver — Round 4</div>
+                <div class="block prompt-block">
+                    <div class="block-label">sees</div>
+                    <pre>Round 4. Red found so far: 4/5.
+
+Previous rounds:
+  Clue: &quot;EARTH&quot; for 2
+  GROUND (Red!)
+  GRASS (Blue - turn over)
+  Clue: &quot;FISHING&quot; for 2
+  HOOK (Red!)
+  ROW (Red!)
+  Clue: &quot;AGENT&quot; for 2
+  SPY (Red!)
+  GHOST (Blue - turn over)
+
+Current board:
+RED words to find (1 remaining): GRACE
+BLUE words to AVOID: BERRY, JACK, KANGAROO, STOCK
+ASSASSIN word to AVOID: FENCE</pre>
+                </div>
+                <div class="block response-block cluegiver-response">
+                    <div class="block-label">responds</div>
+                    <pre>&lt;reasoning&gt;GRACE is the only red word left. None of the blue or assassin words strongly connect to &quot;Grace,&quot; so a clue relating directly to Grace (like &quot;Favor&quot;) is safest. This avoids any strong ties to the blue words (Berry, Jack, Kangaroo, Stock) or the Assassin (Fence).&lt;/reasoning&gt;
+&lt;clue&gt;
+word: Favor
+number: 1
+words: GRACE
+&lt;/clue&gt;</pre>
+                </div>
+            </div>
+            <div class="lane right dimmed"></div>
+        </div>
+        <div class="arrow-row"><div class="arrow">&#x25BC; passes clue</div></div>
+        
+            <div class="step">
+                <div class="lane left dimmed"></div>
+                <div class="lane right active">
+                    <div class="agent-tag guesser-tag">Guesser — Round 4</div>
+                    <div class="block prompt-block">
+                        <div class="block-label">sees</div>
+                        <pre>Round 4. Red found so far: 4/5.
+
+Previous rounds:
+  Clue: &quot;EARTH&quot; for 2
+  GROUND (Red!)
+  GRASS (Blue - turn over)
+  Clue: &quot;FISHING&quot; for 2
+  HOOK (Red!)
+  ROW (Red!)
+  Clue: &quot;AGENT&quot; for 2
+  SPY (Red!)
+  GHOST (Blue - turn over)
+
+Clue: &quot;FAVOR&quot; for 1
+You may guess up to 2 words.
+
+Remaining words: BERRY, FENCE, JACK, KANGAROO, STOCK, GRACE</pre>
+                    </div>
+                    <div class="block response-block guesser-response">
+                        <div class="block-label">responds</div>
+                        <pre>&lt;reasoning&gt;
+The clue &quot;FAVOR&quot; suggests something related to kindness, preference, or possibly names associated with kindness or grace. Among the remaining words, &quot;GRACE&quot; directly relates to &quot;favor&quot; as grace can mean favor or goodwill. Other words like BERRY, FENCE, JACK, KANGAROO, STOCK don&#x27;t strongly associate with &quot;favor.&quot; &quot;JACK&quot; might be risky as it could connect to other meanings but is less direct. I am highly confident about &quot;GRACE&quot; and hesitant about guessing another word since there might only be one intended by the clue.
+&lt;/reasoning&gt;
+&lt;guesses&gt;
+GRACE: directly related to &quot;favor&quot; as grace means goodwill or favor
+STOP
+&lt;/guesses&gt;</pre>
+                    </div>
+                    <div class="results"><span class="result-correct">GRACE → RED</span> </div>
+                </div>
+            </div>
+            
+</div>
+
+<div class="outcome-banner outcome-win">WIN — all reds found!</div>
+</body>
+</html>

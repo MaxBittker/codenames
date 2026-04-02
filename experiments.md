@@ -15,7 +15,6 @@
 - **Reward hacking with ambition bonus** — adding clue_ambition_reward (bonus for higher clue numbers) caused the model to claim large numbers without proportional game improvement. Total reward inflated while game_reward stayed flat.
 - **Clean reward (game_reward only) is more reliable** — the simple per-card additive scoring (red found vs blue/assassin penalties) produces steady improvement without gaming.
 
-
 ### Board Simplification
 - Removed civilians from the default board config (was 25 words, now 16: 8 red, 7 blue, 1 assassin). Reduces noise and makes every wrong guess meaningfully bad (blue or assassin), which should sharpen the reward signal.
 
@@ -24,46 +23,79 @@
 - **But the model learned "pitter-patter" clues** — giving one safe single-word clue per red word (~8 clues per game) instead of connecting multiple words. Without efficiency pressure in the reward, there's no incentive to take the risk of multi-word clues.
 - Multi-turn needs an efficiency component (e.g. penalty per clue given, or bonus for fewer rounds) to incentivize ambitious clue-giving.
 
+### Architecture: MultiAgentEnv Migration
+- Rewrote the environment from `MultiTurnEnv` (single-context, external `LLMGuesser` API calls) to `MultiAgentEnv` (isolated per-agent contexts, protocol-based turn order, `actor_models` routing).
+- Fixes the information leakage problem in the old `CodenameSelfPlayEnv` where the guesser saw the cluegiver's reasoning (including color information) in the same context window.
+- Each agent now gets a completely fresh conversation — the cluegiver sees the board with colors, the guesser sees only the word list plus the parsed clue.
+- `actor_models` routing doesn't work for external APIs (e.g. `openai/gpt-4.1-mini`) on the hosted training infra — the inference client only knows about the training model. Eval configs that use a fixed external guesser need a different approach.
+- Vendored the `MultiAgentEnv`, `Agent`, `Protocol`, and `RoundRobinProtocol` classes into the codenames package since they're not yet in the standard verifiers release.
+
 ---
 
-## Current Best Configuration
+## Environment (v0.3.5)
+- `CodenamesEnv(MultiAgentEnv)` with `RoundRobinProtocol(["cluegiver", "guesser"])`
+- Cluegiver: XML `<clue>` block with `word`, `number`, `words` fields
+- Guesser: XML `<guesses>` block with `WORD: reason` lines, `STOP` to end early
+- `max_turns=2` — one turn per agent per rollout (single-clue game)
+- Variable board sizes (4–16 words) via `BoardSamplingConfig`
 
-- **Model**: Qwen3-30B-A3B-Instruct-2507
-- **Guesser**: gpt-5.4-mini (fixed, external)
-- **Board**: 16 words (8 red, 7 blue, 0 civilian, 1 assassin)
-- **Reward**: game_reward only (no shaping), weight=1.0
-- **Batch size**: 2048, rollouts_per_example=16
-- **Max tokens**: 512
-- **Clue rules**: single word, max 15 letters, case-normalized
+### Reward
+- `game_reward` (weight 1.0): per-card additive, max 2.0. Assassin = -1.0, each red = +2.0/num_red, blue = -0.5 * per_red
+- `shot_calling_reward` (weight 0.5): shots_hit / num_red
+- `cluegiver_format_reward` (weight 0.1): 1.0 if valid XML `<clue>` block
+- `guesser_format_reward` (weight 0.1): 1.0 if valid XML `<guesses>` block
+- Metrics (weight 0.0): assassin rate, red found, shots hit, clue number
+
+Note: `ambition_reward` was removed — it caused reward hacking (model claimed large clue numbers without proportional game improvement).
+
+---
+
+## Insights from the Hanabi Work
+
+The [nphard.io Hanabi post](https://nphard.io/2026/02/23/hanabi.html) describes training multi-agent RL on cooperative card games using the same `MultiAgentEnv` abstractions we adopted. Key takeaways relevant to Codenames:
+
+### What Worked
+- **Small models can beat frontier baselines via RL**: Qwen3-4B went from 1.0 to 8.4 points on Hanabi (GPT-4.1-mini baseline: 3.5) after SFT + RL. Tiny Hanabi (1.7B model) reached 91% of max score. Model size matters less than training signal quality.
+- **SFT bootstrapping before RL**: Hanabi used synthetic SFT data to get the model into a reasonable policy region before RL. This prevented early collapse that raw RL sometimes causes, especially on smaller models.
+- **Information isolation is essential**: Each player sees only what they should (other players' hands, not their own). Without isolation, agents learn shortcuts through weight-sharing that bypass the game's information constraints. This directly validates our MultiAgentEnv migration — the old self-play env leaked cluegiver reasoning to the guesser.
+- **Common-payoff simplifies credit assignment**: When both agents share one reward (as in Codenames), you avoid the per-agent baseline complexity needed for asymmetric games. Codenames is cooperative — both agents want reds found.
+
+### What Broke
+- **Context length explosion**: Hanabi saw sequence lengths grow from 5k to 13k as models became more verbose. More reasoning tokens ≠ better play. Worth watching in Codenames if we go multi-turn.
+- **Opponent conditioning / brittleness**: Self-play produces effective but arbitrary conventions that don't generalize to other partners. The Hanabi model responded to color hints as "play this card" but couldn't adapt to different play styles. Our self-play cluegiver-guesser could develop similar brittle conventions.
+- **GRPO kills mixed strategies**: The positive-feedback loop in GRPO drives action probabilities toward 0 or 1. Once a strategy marginally outperforms alternatives, gradients amplify the gap until alternatives go extinct. Less relevant for Codenames (cooperative, not competitive), but worth noting if we see mode collapse in clue styles.
+
+### Implications for Codenames
+1. **Self-play conventions risk**: If both agents are trained, they may develop idiosyncratic "languages" that work between copies of the same model but fail with any other guesser. This is the opponent conditioning problem. We should compare self-play eval against fixed-guesser eval to detect this.
+2. **SFT bootstrapping could help 4B**: Our 4B runs collapsed, but Hanabi 4B succeeded after SFT warm-start. We could generate synthetic cluegiver trajectories from 30B or GPT and SFT before RL.
+3. **Per-agent LoRA**: For asymmetric roles (cluegiver ≠ guesser), separate LoRA adapters let each role specialize while sharing base weights. This is more parameter-efficient than full model duplication and prevents one role's gradient noise from corrupting the other.
+4. **The `is_trainable` flag matters**: Setting the guesser to `is_trainable=False` when using a fixed model prevents format failures in guesser completions from polluting the training gradient.
 
 ---
 
 ## Experiment Ideas
 
-### Call Its Shot (Predicted Targets)
-Have the cluegiver predict which specific red words its clue is intended for (e.g. via an additional tool parameter `targets: list[str]`). These predictions are NOT passed to the guesser — only the clue word and number are. Award bonus reward when the guesser's correct guesses match the cluegiver's predicted targets. This:
-- Encourages intentional, targeted clue-giving over vague associations
-- Creates a richer reward signal (did the model connect the words it meant to?)
-- Doesn't change the guesser's information — purely a cluegiver self-assessment
-- Could surface interesting behaviors: does the model learn to predict which words are "guessable"?
+### Priority: Validate MultiAgentEnv Self-Play
+The immediate question is whether the new MultiAgentEnv self-play runs produce training signal at all. Watch the 4B and 30B runs for:
+- Does game_reward improve?
+- Do both agents produce well-formed output (XML for cluegiver, WORD:reason for guesser)?
+- Are the generated clues reasonable or do they degenerate?
+- Does the model develop conventions that only work in self-play?
 
-### Multi-Turn with Efficiency Reward
-The multi-turn experiment needs efficiency pressure to prevent pitter-patter (one clue per word). Options:
-- **Cap max clue rounds** (e.g. 4 rounds for 8 reds) — forces multi-word clues by construction
-- **Per-clue penalty** — small negative reward per clue given, so fewer rounds = higher reward
-- **Efficiency bonus** — reward `reds_found / clues_given` ratio
-- Key tension: efficiency shaping previously caused reward hacking (ambition bonus). Need a formulation that can't be gamed — capping rounds is the most robust since it's structural, not reward-based
+### SFT Bootstrapping for Smaller Models
+Generate synthetic training data from a strong model (30B checkpoint or GPT) playing both roles on varied boards. SFT a 4B model on this data before starting RL. The Hanabi post showed this is critical for preventing small model collapse.
 
-### Self-Play Variants
-- **Frozen self-play**: use a checkpoint of the training model as guesser (no external API cost)
-- **Co-training**: train both cluegiver and guesser, but this requires EnvGroup or multi-agent setup
-- The 30B model as its own guesser could develop coordinated clue-giving strategies
+### Cross-Play Evaluation
+After self-play training, evaluate the trained cluegiver against a frozen/external guesser (and vice versa) to measure how much of the improvement is genuine skill vs. self-play convention. If the trained cluegiver's game_reward drops significantly with a GPT guesser, the model learned a private language rather than better clue-giving.
+
+### Per-Agent LoRA
+Train separate LoRA adapters for cluegiver and guesser roles. This lets each role specialize (cluegiver: word association + avoidance reasoning; guesser: clue interpretation + board elimination) without interfering with each other's gradients.
+
+### Multi-Turn with Structural Efficiency Pressure
+Cap max clue rounds (e.g. 3 rounds for 8 reds) rather than using reward shaping. This forces multi-word clues by construction — you can't pitter-patter if you only get 3 turns. Structural constraints can't be reward-hacked.
 
 ### Difficulty Curriculum
-Start on easier boards (fewer words, fewer blues) and progressively increase difficulty as reward improves. The easy preset (7 words: 3 red, 2 blue, 1 civilian, 1 assassin) provides a faster learning signal.
+Start on small boards (4–6 words, 2 red) and progressively increase. The Hanabi "Tiny" variant showed that simplified games produce faster convergence and cheaper iteration. Scale up once the training signal is validated.
 
-### Adversarial Boards
-Generate boards where red words are semantically close to blue/assassin words. Forces the model to find more creative, discriminating clues rather than relying on obvious category matches.
-
-### Smaller Model with XML Format + Prompted Reasoning
-Try a smaller model (sub-30B) using XML-based structured output instead of tool calling, with prompt adjustments to make it work. Tool calling broke down on 4B previously, but XML format with a well-tuned prompt might be more robust for smaller models. Also try approximating thinking-mode behavior by prompting the instruct model to reason through its strategy (e.g. consider word associations, assess risk of blue/assassin overlap) before giving its clue. This could get some of the benefits of thinking models without needing the thinking variant.
+### Population-Based Self-Play
+Maintain a pool of past checkpoints as potential partners. Train the current model against randomly sampled partners from the pool rather than always against itself. This should reduce opponent conditioning and produce more robust strategies — the Hanabi post specifically flags this as a promising direction.
