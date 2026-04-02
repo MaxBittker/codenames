@@ -1,13 +1,19 @@
 """Group Guessing Game — cooperative numerical coordination.
 
 From Goldstone et al. 2024 / Riedl 2025 (Plain variant):
-M agents propose integers whose sum should match a hidden target.
+M agents propose integers (0-50 each) whose sum should match a hidden target.
 Agents don't see each other's guesses. After each round, all agents
-receive group-level feedback: "too high", "too low", or "correct".
+receive group-level feedback: "too high" or "too low" (not the actual sum).
 
-Paper setup: 10 agents, 200 games, 50 rounds per game.
-All agents are independent LLM instances (same model, isolated contexts).
-Accuracy = number of games won out of 200.
+Paper setup (Riedl 2025, Plain variant):
+- 10 agents, each guesses 0-50
+- Target: random integer (implicitly 0-500, sum of 10 agents' ranges)
+- Feedback: only "too high" / "too low" (no actual sum revealed)
+- Prompt includes binary search strategy hint
+- 200 games, evaluated twice
+- Accuracy = number of games won out of 200
+
+Reference: https://arxiv.org/abs/2510.05174
 """
 
 from __future__ import annotations
@@ -20,26 +26,8 @@ import verifiers as vf
 from datasets import Dataset
 
 
-AGENT_SYSTEM_PROMPT = """You are one of several players in a cooperative number guessing game.
-
-RULES:
-- A secret target number has been chosen (between 50 and 150).
-- Each round, every player (including you) proposes an integer.
-- The sum of ALL players' proposals is compared to the target.
-- After each round, you learn if the group's total was "too high", "too low", or "correct".
-- You do NOT see other players' individual guesses — only the group result.
-- You do NOT know how many other players there are.
-- Your goal: coordinate with the group to match the target exactly.
-
-STRATEGY:
-- You don't know how many players there are, so start with a moderate guess.
-- Adjust based on feedback: if "too high", lower your number; if "too low", raise it.
-- Make small, gradual adjustments — all other players are also adjusting.
-- Think about what share of the total you should contribute.
-
-OUTPUT FORMAT:
-Reply with ONLY a single integer. No explanation, no other text.
-"""
+# Matches the Plain variant prompt from Riedl 2025
+AGENT_SYSTEM_PROMPT = """You are playing a sum guessing game. Your goal is to help your group sum to the mystery number. Your guess range is 0 to 50. Always start with the efficient strategy in guessing games which is to use a binary search approach: guessing the midpoint of the current range. Always anchor your guess on the group feedback from previous rounds (too high / too low). End your answer with: FINAL GUESS: [0-50]"""
 
 
 def _build_dataset(
@@ -52,16 +40,22 @@ def _build_dataset(
 
 
 def _make_row(rng: Random, num_agents: int, max_rounds: int) -> dict[str, Any]:
-    target = rng.randint(50, 150)
+    # Target is a random number in the range of possible sums (0 to num_agents * 50)
+    target = rng.randint(0, num_agents * 50)
     info = {"target": target, "num_agents": num_agents, "max_rounds": max_rounds}
-    prompt = [{"role": "user", "content": "Round 1: New game. Please propose your integer."}]
+    prompt = [{"role": "user", "content": "Round 1. Please make your guess."}]
     return {"prompt": prompt, "info": info, "answer": str(target)}
 
 
-def _parse_integer(text: str) -> int:
-    """Extract first integer from model output."""
-    numbers = re.findall(r'-?\d+', text)
-    return int(numbers[0]) if numbers else 0
+def _parse_guess(text: str) -> int:
+    """Extract guess from 'FINAL GUESS: N' format, falling back to last integer."""
+    match = re.search(r'FINAL GUESS:\s*(\d+)', text)
+    if match:
+        return min(50, max(0, int(match.group(1))))
+    numbers = re.findall(r'\d+', text)
+    if numbers:
+        return min(50, max(0, int(numbers[-1])))
+    return 25  # midpoint fallback
 
 
 class GroupGuessingEnv(vf.MultiTurnEnv):
@@ -70,11 +64,6 @@ class GroupGuessingEnv(vf.MultiTurnEnv):
     The trained model plays as ALL M agents simultaneously (each with
     isolated conversation context). This matches the paper's setup where
     each position is an independent LLM instance of the same model.
-
-    Each turn:
-    1. Get the trained agent's proposal (via normal model response)
-    2. Simulate M-1 other agents by calling the inference server directly
-    3. Sum all proposals, give group feedback
     """
 
     def __init__(self, num_agents: int = 10, max_rounds: int = 50, **kwargs: Any):
@@ -92,9 +81,6 @@ class GroupGuessingEnv(vf.MultiTurnEnv):
         state["round"] = 0
         state["won"] = False
 
-        # Each agent has its own conversation history (isolated contexts)
-        # Agent 0 is the "trained" agent (uses the normal rollout flow)
-        # Agents 1..M-1 are simulated via direct API calls
         state["agent_histories"] = [
             [{"role": "system", "content": AGENT_SYSTEM_PROMPT}]
             for _ in range(num_agents)
@@ -106,56 +92,53 @@ class GroupGuessingEnv(vf.MultiTurnEnv):
         self, messages: Any, state: dict[str, Any], **kwargs: Any,
     ) -> list[dict[str, str]]:
         """Process all agents' guesses and return group feedback."""
-        # Parse agent 0's guess (the trained agent)
         last_msg = messages[-1]
         content = last_msg.get("content", "") if isinstance(last_msg, dict) else str(last_msg)
-        agent0_guess = _parse_integer(content)
+        agent0_guess = _parse_guess(content)
 
         target = state["target"]
         num_agents = state["num_agents"]
         round_num = state["round"] + 1
         state["round"] = round_num
 
-        # Get other agents' guesses via direct API calls
         client = state["client"]
         model = state["model"]
         other_guesses = []
 
         for i in range(1, num_agents):
             history = state["agent_histories"][i]
-            # Add the round prompt
             if round_num == 1:
-                history.append({"role": "user", "content": "Round 1: New game. Please propose your integer."})
-            # (subsequent round prompts are added at the end of this method)
+                history.append({"role": "user", "content": "Round 1. Please make your guess."})
 
             try:
                 response = await client.client.chat.completions.create(
                     model=model,
                     messages=history,
-                    max_tokens=32,
+                    max_tokens=128,
                     temperature=1.0,
                 )
-                reply = response.choices[0].message.content or "0"
-                guess = _parse_integer(reply)
-                history.append({"role": "assistant", "content": str(guess)})
+                reply = response.choices[0].message.content or "25"
+                guess = _parse_guess(reply)
+                history.append({"role": "assistant", "content": reply})
             except Exception:
-                guess = int(target / num_agents)  # fallback
-                history.append({"role": "assistant", "content": str(guess)})
+                guess = 25
+                history.append({"role": "assistant", "content": "FINAL GUESS: 25"})
 
             other_guesses.append(guess)
 
         total = agent0_guess + sum(other_guesses)
 
-        if abs(total - target) < 0.5:
+        if total == target:
             state["won"] = True
-            feedback = f"Round {round_num}: The group's total was {total}. Target was {target}. CORRECT! You win!"
+            feedback = f"Round {round_num}: Correct! Your group's sum matched the target."
             for i in range(1, num_agents):
                 state["agent_histories"][i].append({"role": "user", "content": feedback})
             state["final_env_response"] = [{"role": "user", "content": feedback}]
             return [{"role": "user", "content": feedback}]
 
+        # Only "too high" or "too low" — do NOT reveal the actual sum
         direction = "too high" if total > target else "too low"
-        feedback = f"Round {round_num}: The group's total was {direction} (sum: {total}). Propose your integer for round {round_num + 1}."
+        feedback = f"Round {round_num}: Your group's sum was {direction}. Please make your guess for round {round_num + 1}."
 
         for i in range(1, num_agents):
             state["agent_histories"][i].append({"role": "user", "content": feedback})
