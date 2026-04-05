@@ -650,6 +650,17 @@ async def avg_clue_number_metric(state: dict[str, Any], **kwargs: Any) -> float:
     return total / len(rounds)
 
 
+async def length_penalty(state: dict[str, Any], **kwargs: Any) -> float:
+    """Penalize excessively long outputs to prevent verbose collapse."""
+    cluegiver_text = state.get("cluegiver_output", "")
+    guesser_text = state.get("guesser_output", "")
+    longest = max(len(cluegiver_text), len(guesser_text))
+    char_threshold = 400
+    if longest > char_threshold:
+        return -1.0 * min(1.0, (longest - char_threshold) / 400)
+    return 0.0
+
+
 # ---------------------------------------------------------------------------
 # Loader
 # ---------------------------------------------------------------------------
@@ -681,11 +692,11 @@ def load_environment(
     rubric = vf.Rubric(
         funcs=[
             game_reward, efficiency_reward, shot_calling_reward,
-            cluegiver_format_reward, guesser_format_reward,
+            cluegiver_format_reward, guesser_format_reward, length_penalty,
             assassin_metric, blue_hit_metric, red_found_metric, shots_hit_metric,
             rounds_metric, win_metric, avg_clue_number_metric,
         ],
-        weights=[1.0, 0.5, 0.3, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        weights=[1.0, 1.0, 0.3, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         parser=parser,
     )
 

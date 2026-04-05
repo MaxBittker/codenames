@@ -4,6 +4,9 @@ max_steps = 250
 batch_size = 2048
 rollouts_per_example = 16
 
+# Resume from step 175 of plb0b02rtjnaxu7ffd3d8a9q — bump efficiency, relax length penalty
+checkpoint_id = "mopgjfrup1rdcbh4x9fdfjo7"
+
 [sampling]
 max_tokens = 2048
 
@@ -22,7 +25,7 @@ args = { train_size = 100000, eval_size = 500, self_play = true }
 
 [wandb]
 project = "codenames"
-name = "codename-multiturn"
+name = "multiturn-selfplay-resume-s175-efficiency-boost"
 entity = "maxbittker-websim"
 
 [checkpoints]

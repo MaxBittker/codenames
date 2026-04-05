@@ -22,7 +22,7 @@ args = { train_size = 100000, eval_size = 500, self_play = true }
 
 [wandb]
 project = "codenames"
-name = "codename-multiturn"
+name = "multiturn-selfplay-fresh-efficiency-boost"
 entity = "maxbittker-websim"
 
 [checkpoints]
