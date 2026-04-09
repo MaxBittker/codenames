@@ -240,6 +240,7 @@ class CodenamesEnv(MultiAgentEnv):
         guesser_trainable: bool = False,
         guesser_model: str | None = None,
         max_turns: int = 30,
+        opponent_guesses_per_turn: int = 0,
         **kwargs: Any,
     ):
         protocol = RoundRobinProtocol(["cluegiver", "guesser"])
@@ -249,6 +250,7 @@ class CodenamesEnv(MultiAgentEnv):
             parser=parser,
             **kwargs,
         )
+        self.opponent_guesses_per_turn = opponent_guesses_per_turn
 
         self.register_agent(Agent(
             id="cluegiver",
@@ -282,6 +284,8 @@ class CodenamesEnv(MultiAgentEnv):
         state["round_history"] = []  # list of {clue, results} per round
         state["total_shots_hit"] = 0
         state["all_target_words"] = []
+        state["opponent_blues_found"] = 0
+        state["opponent_won"] = False
         return state
 
     # ------------------------------------------------------------------
@@ -454,7 +458,26 @@ class CodenamesEnv(MultiAgentEnv):
         red_remaining = count_remaining(board, "Red")
         if state["assassin_hit"] or red_remaining == 0:
             state["game_over"] = True
-        # Otherwise game continues — next round
+            return
+
+        # Simulate opponent turn: they find N blue words per round
+        if self.opponent_guesses_per_turn > 0:
+            blue_remaining = count_remaining(board, "Blue")
+            opponent_finds = min(self.opponent_guesses_per_turn, blue_remaining)
+            # Reveal blue words from the board (opponent "guesses" them)
+            found = 0
+            for i, (color, revealed) in enumerate(zip(board.key_grid, board.revealed)):
+                if found >= opponent_finds:
+                    break
+                if color == "Blue" and revealed is None:
+                    board.revealed[i] = "Blue"
+                    found += 1
+            state["opponent_blues_found"] = state.get("opponent_blues_found", 0) + found
+            state["board"] = board.to_dict()
+            # If opponent found all their blues, they win
+            if count_remaining(board, "Blue") == 0:
+                state["opponent_won"] = True
+                state["game_over"] = True
 
     # ------------------------------------------------------------------
     # Stop condition
@@ -495,6 +518,8 @@ class CodenamesEnv(MultiAgentEnv):
 
         if state.get("assassin_hit"):
             summary_lines.append(f"\nOUTCOME: LOSS (assassin hit)")
+        elif state.get("opponent_won"):
+            summary_lines.append(f"\nOUTCOME: LOSS (opponent finished first) — {state['total_red_found']}/{num_red} reds found in {len(rounds)} rounds")
         elif red_remaining == 0:
             summary_lines.append(f"\nOUTCOME: WIN — all {num_red} reds found in {len(rounds)} rounds")
         else:
@@ -649,6 +674,11 @@ async def win_metric(state: dict[str, Any], **kwargs: Any) -> float:
     return 1.0 if state.get("total_red_found", 0) >= num_red else 0.0
 
 
+async def opponent_win_metric(state: dict[str, Any], **kwargs: Any) -> float:
+    """1.0 if the opponent won (found all blues), 0.0 otherwise."""
+    return 1.0 if state.get("opponent_won", False) else 0.0
+
+
 async def avg_clue_number_metric(state: dict[str, Any], **kwargs: Any) -> float:
     """Average clue number across all rounds."""
     rounds = state.get("round_history", [])
@@ -686,6 +716,7 @@ def load_environment(
     min_red_ratio: float = 0.3,
     max_red_ratio: float = 0.6,
     efficiency_weight: float = 1.0,
+    opponent_guesses_per_turn: int = 0,
     **kwargs: Any,
 ) -> vf.Environment:
     sampling = BoardSamplingConfig(
@@ -703,9 +734,9 @@ def load_environment(
             game_reward, efficiency_reward, shot_calling_reward,
             cluegiver_format_reward, guesser_format_reward, length_penalty,
             assassin_metric, blue_hit_metric, red_found_metric, shots_hit_metric,
-            rounds_metric, win_metric, avg_clue_number_metric,
+            rounds_metric, win_metric, opponent_win_metric, avg_clue_number_metric,
         ],
-        weights=[1.0, efficiency_weight, 0.3, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        weights=[1.0, efficiency_weight, 0.3, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         parser=parser,
     )
 
@@ -716,5 +747,6 @@ def load_environment(
         guesser_trainable=self_play,
         guesser_model=None if self_play else guesser_model,
         max_turns=max_turns,
+        opponent_guesses_per_turn=opponent_guesses_per_turn,
         **kwargs,
     )
