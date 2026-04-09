@@ -9,7 +9,7 @@ max_tokens = 2048
 
 [[env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, self_play = true, efficiency_weight = 2.0 }
+args = { train_size = 100000, eval_size = 500, self_play = true, efficiency_weight = 4.0 }
 
 [eval]
 interval = 25
@@ -18,11 +18,11 @@ rollouts_per_example = 4
 
 [[eval.env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, self_play = true, efficiency_weight = 2.0 }
+args = { train_size = 100000, eval_size = 500, self_play = true, efficiency_weight = 4.0 }
 
 [wandb]
 project = "codenames"
-name = "multiturn-4b-gated-format-partial-eff"
+name = "multiturn-4b-gated-format-eff4x-len2k"
 entity = "maxbittker-websim"
 
 [checkpoints]

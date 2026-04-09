@@ -1,0 +1,7 @@
+2026-03-25 15:27:45 - verifiers.workers.server.env_server.ZMQEnvServer - INFO - Initializing ZMQEnvServer to serve ifeval (env_args={}, extra_env_kwargs={'concurrency': 32})
+2026-03-25 15:27:45 - verifiers.workers.server.env_server.ZMQEnvServer - INFO - Loading environment ifeval with env_args={}
+2026-03-25 15:27:45 - verifiers.utils.env_utils - INFO - Loading environment: ifeval
+2026-03-25 15:27:45 - verifiers.utils.env_utils - INFO - Using default args: mode='strict', system_prompt=None
+2026-03-25 15:27:46 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'ifeval'
+2026-03-25 15:27:46 - verifiers.workers.server.env_server.ZMQEnvServer - INFO - Setting extra environment kwargs: {'concurrency': 32}
+2026-03-25 15:27:46 - verifiers.utils.thread_utils - INFO - Scaled 0 registered executor(s) and default executor ()

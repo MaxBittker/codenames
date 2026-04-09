@@ -1,0 +1,7 @@
+2026-03-25 15:27:46 - verifiers.workers.server.env_server.ZMQEnvServer - INFO - Initializing ZMQEnvServer to serve gsm8k (env_args={}, extra_env_kwargs={'concurrency': 32})
+2026-03-25 15:27:46 - verifiers.workers.server.env_server.ZMQEnvServer - INFO - Loading environment gsm8k with env_args={}
+2026-03-25 15:27:46 - verifiers.utils.env_utils - INFO - Loading environment: gsm8k
+2026-03-25 15:27:46 - verifiers.utils.env_utils - INFO - Using default args: num_eval_examples=-1, system_prompt='Please reason step by step, and put your final answer within \boxed{}.', num_train_examples=-1
+2026-03-25 15:27:47 - verifiers.utils.env_utils - INFO - Successfully loaded environment 'gsm8k'
+2026-03-25 15:27:47 - verifiers.workers.server.env_server.ZMQEnvServer - INFO - Setting extra environment kwargs: {'concurrency': 32}
+2026-03-25 15:27:47 - verifiers.utils.thread_utils - INFO - Scaled 1 registered executor(s) and default executor (math-verify-4656617456=1)

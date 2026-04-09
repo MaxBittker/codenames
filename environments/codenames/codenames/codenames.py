@@ -663,9 +663,9 @@ async def length_penalty(state: dict[str, Any], **kwargs: Any) -> float:
     cluegiver_text = state.get("cluegiver_output", "")
     guesser_text = state.get("guesser_output", "")
     longest = max(len(cluegiver_text), len(guesser_text))
-    char_threshold = 800
+    char_threshold = 2000
     if longest > char_threshold:
-        return -1.0 * min(1.0, (longest - char_threshold) / 800)
+        return -1.0 * min(1.0, (longest - char_threshold) / 2000)
     return 0.0
 
 
