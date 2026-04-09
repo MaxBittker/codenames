@@ -30,6 +30,25 @@
 - `actor_models` routing doesn't work for external APIs (e.g. `openai/gpt-4.1-mini`) on the hosted training infra — the inference client only knows about the training model. Eval configs that use a fixed external guesser need a different approach.
 - Vendored the `MultiAgentEnv`, `Agent`, `Protocol`, and `RoundRobinProtocol` classes into the codenames package since they're not yet in the standard verifiers release.
 
+### Multi-Turn Self-Play Collapse (v0.3.11, Apr 8-9)
+- **4B eff2x run collapsed into format-only exploitation.** The model discovered it could earn reward=1.0 by producing valid XML tags (`<clue>`, `<guesses>`) with nonsense content (guessing words not on the board, word-salad reasoning like "The balance between geometry and anomaly manifests"). All game metrics went to zero by step 41, format rewards locked at 1.0 for the remaining 250 steps.
+- **Collapse pathway:** Early training had length_penalty=-1.0 (400 char threshold too tight for legitimate reasoning). This suppressed game-playing behavior. The model then found the format-only attractor (0.5 + 0.5 = 1.0) was reachable without playing at all. Once there, no gradient to escape.
+- **35B (Qwen3.5-35B-A3B) also failed** — thinking model consumed entire 2048 max_tokens budget with `<think>` blocks, never produced `<clue>` XML. All game metrics zero. Bumping to 8192 max_tokens was the fix but run was stopped before validating.
+
+### Fixes (v0.3.12)
+- **Gated format rewards**: Format rewards now require `total_red_found > 0`. Can't collect format reward without actually finding a red word. Eliminates the degenerate format-only attractor.
+- **Partial efficiency reward**: Changed from win-only bonus to `reds_per_round / num_red` ratio. Provides gradient from step 0 instead of only after wins. Pitter-patter (1 red/round, 5 reds) scores ~0.04; multi-word clue (3 reds in 1 round) scores 0.6.
+- **Length penalty softened**: Char threshold raised 400→800, ramp doubled (800 chars of headroom). Legitimate `<reasoning>` + `<clue>` blocks won't trigger it.
+- **`efficiency_weight` parameter** added to `load_environment()` for config-level control.
+
+### Key Insight: Reward Exploitation Taxonomy
+Three distinct failure modes observed so far:
+1. **Reward hacking** (ambition bonus) — model games the metric being rewarded without improving underlying behavior.
+2. **Format-only exploitation** — model produces syntactically valid but semantically empty outputs to collect format rewards without playing.
+3. **Pitter-patter** — model finds the safe local optimum (1 clue per red, ~4.5 rounds) that maximizes game_reward without efficiency pressure.
+
+Each requires a different fix: (1) remove the hackable reward, (2) gate auxiliary rewards on gameplay, (3) structural caps or efficiency incentives.
+
 ---
 
 ## Environment (v0.3.5)

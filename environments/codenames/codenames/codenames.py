@@ -541,7 +541,10 @@ async def cluegiver_format_reward(state: dict[str, Any], **kwargs: Any) -> float
 
     Returns 1.0 for a single well-formed <clue> block, -1.0 if duplicate
     tags are found (degenerate repetition), 0.0 otherwise.
+    Only pays out if at least one red was found (prevents format-only exploitation).
     """
+    if state.get("total_red_found", 0) == 0:
+        return 0.0
     text = state.get("cluegiver_output", "")
     if not text:
         return 0.0
@@ -557,7 +560,10 @@ async def guesser_format_reward(state: dict[str, Any], **kwargs: Any) -> float:
 
     Returns 1.0 for a single well-formed <guesses> block, -1.0 if duplicate
     tags are found (degenerate repetition), 0.0 otherwise.
+    Only pays out if at least one red was found (prevents format-only exploitation).
     """
+    if state.get("total_red_found", 0) == 0:
+        return 0.0
     text = state.get("guesser_output", "")
     if not text:
         return 0.0
@@ -585,23 +591,25 @@ async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
 
 
 async def efficiency_reward(state: dict[str, Any], **kwargs: Any) -> float:
-    """Reward for winning in fewer rounds.
+    """Reward for finding reds efficiently (reds-per-round ratio).
 
-    Only applies on wins. Returns 1.0 - (rounds_used - 1) / max_possible_rounds,
-    clamped to [0, 1]. Winning in 1 round = 1.0, winning in N rounds where
-    N = num_red = 0.0 (one word per round, worst efficiency).
+    Applies to all games, not just wins, so there's gradient from step 0.
+    Returns red_found / rounds, normalized to [0, 1] range.
+    A perfect game (all reds in 1 round) scores 1.0.
+    Pitter-patter (1 red per round) scores ~1/num_red.
     """
-    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
-    board = BoardState.from_dict(state["board"])
-    red_remaining = count_remaining(board, "Red")
-    if red_remaining > 0:
-        return 0.0  # didn't win, no efficiency bonus
     rounds = len(state.get("round_history", []))
-    if rounds <= 1:
-        return 1.0
-    # Linear scale: 1 round = 1.0, num_red rounds = 0.0
-    max_rounds = num_red  # worst case: one word per round
-    return max(0.0, 1.0 - (rounds - 1) / max(1, max_rounds - 1))
+    if rounds == 0:
+        return 0.0
+    red_found = state.get("total_red_found", 0)
+    if red_found == 0:
+        return 0.0
+    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+    # reds_per_round / num_red normalizes to [0, 1]
+    # finding all reds in 1 round = num_red / 1 / num_red = 1.0
+    # finding 1 red per round over num_red rounds = 1 / num_red ≈ 0.2
+    reds_per_round = red_found / rounds
+    return min(1.0, reds_per_round / num_red)
 
 
 async def shot_calling_reward(state: dict[str, Any], **kwargs: Any) -> float:
@@ -655,9 +663,9 @@ async def length_penalty(state: dict[str, Any], **kwargs: Any) -> float:
     cluegiver_text = state.get("cluegiver_output", "")
     guesser_text = state.get("guesser_output", "")
     longest = max(len(cluegiver_text), len(guesser_text))
-    char_threshold = 400
+    char_threshold = 800
     if longest > char_threshold:
-        return -1.0 * min(1.0, (longest - char_threshold) / 400)
+        return -1.0 * min(1.0, (longest - char_threshold) / 800)
     return 0.0
 
 
@@ -677,6 +685,7 @@ def load_environment(
     max_board_size: int = 16,
     min_red_ratio: float = 0.3,
     max_red_ratio: float = 0.6,
+    efficiency_weight: float = 1.0,
     **kwargs: Any,
 ) -> vf.Environment:
     sampling = BoardSamplingConfig(
@@ -696,7 +705,7 @@ def load_environment(
             assassin_metric, blue_hit_metric, red_found_metric, shots_hit_metric,
             rounds_metric, win_metric, avg_clue_number_metric,
         ],
-        weights=[1.0, 1.0, 0.3, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        weights=[1.0, efficiency_weight, 0.3, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         parser=parser,
     )
 
