@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .venv/
+.direnv/
 __pycache__/
 *.pyc
 *.whl
@@ -16,3 +17,5 @@ logs/
 configs/rl/*
 configs/gepa/*
 configs/eval/*
+
+downloads

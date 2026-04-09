@@ -1,0 +1,57 @@
+# Qwen3-30B-MoE on Codenames (self-managed on Prime on-demand cloud)
+#
+# Self-play: the training model serves as both cluegiver AND guesser.
+#
+# Requirements: 8x H100 (6 inference, 2 training)
+# Env vars needed: WANDB_API_KEY (optional, for logging)
+
+max_steps = 200
+seq_len = 2048
+
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 6
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+[wandb]
+project = "codenames"
+name = "qwen3-30b-moe-selfmanaged"
+
+[ckpt]
+interval = 50
+
+[orchestrator]
+batch_size = 2048
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 4096
+
+[[orchestrator.env]]
+id = "codenames"
+
+[orchestrator.env.args]
+train_size = 100000
+eval_size = 500
+self_play = true
+
+[orchestrator.eval]
+interval = 25
+num_examples = 20
+rollouts_per_example = 4
+
+[[orchestrator.eval.env]]
+id = "codenames"
+
+[orchestrator.eval.env.args]
+train_size = 100000
+eval_size = 500
+self_play = true
+
+[trainer.optim]
+lr = 3e-6
+
+[inference.parallel]
+dp = 6
