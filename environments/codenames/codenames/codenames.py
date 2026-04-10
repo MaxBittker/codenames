@@ -607,17 +607,19 @@ async def guesser_format_reward(state: dict[str, Any], **kwargs: Any) -> float:
 
 
 async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
-    """Race reward: our progress minus opponent's progress.
+    """Race reward with convex (squared) progress curve.
 
-    reward = (reds_found / num_red) - (opponent_blues_found / num_blue)
+    reward = (reds_found / num_red)^2 - (opponent_blues_found / num_blue)
     Assassin hit: -1.0
-    No opponent (opponent_rate=0): falls back to reds_found / num_red.
+
+    Squaring our progress makes each additional red worth more than the last,
+    pulling the model toward finishing rather than accumulating safely.
     """
     if state.get("assassin_hit", False):
         return -1.0
     num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
     num_blue = state.get("info", {}).get("board_config", {}).get("num_blue", 3)
-    our_progress = state.get("total_red_found", 0) / max(1, num_red)
+    our_progress = (state.get("total_red_found", 0) / max(1, num_red)) ** 2
     opponent_progress = state.get("opponent_blues_found", 0) / max(1, num_blue)
     return our_progress - opponent_progress
 
