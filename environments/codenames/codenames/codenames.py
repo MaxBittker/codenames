@@ -138,22 +138,26 @@ def parse_guesses(
 def _build_dataset(
     train_size: int, eval_size: int, seed: int,
     sampling: BoardSamplingConfig,
+    min_opponent_rate: int = 0,
+    max_opponent_rate: int = 0,
 ) -> tuple[Dataset, Dataset]:
-    train_rows = [_make_row(seed + index, "train", sampling=sampling) for index in range(train_size)]
-    eval_rows = [_make_row(seed + train_size + index, "eval", sampling=sampling) for index in range(eval_size)]
+    train_rows = [_make_row(seed + index, "train", sampling=sampling, min_opp=min_opponent_rate, max_opp=max_opponent_rate) for index in range(train_size)]
+    eval_rows = [_make_row(seed + train_size + index, "eval", sampling=sampling, min_opp=min_opponent_rate, max_opp=max_opponent_rate) for index in range(eval_size)]
     return Dataset.from_list(train_rows), Dataset.from_list(eval_rows)
 
 
-def _make_row(seed: int, split: str, sampling: BoardSamplingConfig) -> dict[str, Any]:
+def _make_row(seed: int, split: str, sampling: BoardSamplingConfig, min_opp: int = 0, max_opp: int = 0) -> dict[str, Any]:
     rng = Random(seed)
     config = sampling.sample(rng)
     board = create_board(rng=rng, config=config)
+    opponent_rate = rng.randint(min_opp, max_opp) if max_opp > 0 else 0
     info: dict[str, Any] = {
         "seed": seed,
         "split": split,
         "words": board.words,
         "key_grid": board.key_grid,
         "board_config": config.to_dict(),
+        "opponent_rate": opponent_rate,
     }
     prompt = [{"role": "user", "content": f"Current board:\n{format_board_for_cluegiver(board)}"}]
     return {"prompt": prompt, "info": info, "answer": "", "task": split}
@@ -286,6 +290,8 @@ class CodenamesEnv(MultiAgentEnv):
         state["all_target_words"] = []
         state["opponent_blues_found"] = 0
         state["opponent_won"] = False
+        # Use per-row opponent rate if available, else fall back to env-level setting
+        state["opponent_rate"] = info.get("opponent_rate", self.opponent_guesses_per_turn)
         return state
 
     # ------------------------------------------------------------------
@@ -461,9 +467,10 @@ class CodenamesEnv(MultiAgentEnv):
             return
 
         # Simulate opponent turn: they find N blue words per round
-        if self.opponent_guesses_per_turn > 0:
+        opponent_rate = state.get("opponent_rate", self.opponent_guesses_per_turn)
+        if opponent_rate > 0:
             blue_remaining = count_remaining(board, "Blue")
-            opponent_finds = min(self.opponent_guesses_per_turn, blue_remaining)
+            opponent_finds = min(opponent_rate, blue_remaining)
             # Reveal blue words from the board (opponent "guesses" them)
             found = 0
             for i, (color, revealed) in enumerate(zip(board.key_grid, board.revealed)):
@@ -600,19 +607,19 @@ async def guesser_format_reward(state: dict[str, Any], **kwargs: Any) -> float:
 
 
 async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
-    """Multi-turn game reward.
+    """Race reward: our progress minus opponent's progress.
 
-    - Assassin hit: -3.0
-    - Each red found: +2.0 / num_red
-    - Each blue hit: -0.5 * per_red penalty
+    reward = (reds_found / num_red) - (opponent_blues_found / num_blue)
+    Assassin hit: -1.0
+    No opponent (opponent_rate=0): falls back to reds_found / num_red.
     """
-    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
     if state.get("assassin_hit", False):
-        return -3.0
-    per_red = 2.0 / num_red
-    reward = state.get("total_red_found", 0) * per_red
-    reward -= state.get("blue_hit_count", 0) * per_red * 0.5
-    return reward
+        return -1.0
+    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+    num_blue = state.get("info", {}).get("board_config", {}).get("num_blue", 3)
+    our_progress = state.get("total_red_found", 0) / max(1, num_red)
+    opponent_progress = state.get("opponent_blues_found", 0) / max(1, num_blue)
+    return our_progress - opponent_progress
 
 
 async def efficiency_reward(state: dict[str, Any], **kwargs: Any) -> float:
@@ -715,8 +722,10 @@ def load_environment(
     max_board_size: int = 16,
     min_red_ratio: float = 0.3,
     max_red_ratio: float = 0.6,
-    efficiency_weight: float = 1.0,
     opponent_guesses_per_turn: int = 0,
+    min_opponent_rate: int = 0,
+    max_opponent_rate: int = 0,
+    game_reward_weight: float = 1.0,
     **kwargs: Any,
 ) -> vf.Environment:
     sampling = BoardSamplingConfig(
@@ -727,16 +736,19 @@ def load_environment(
     )
     dataset, eval_dataset = _build_dataset(
         train_size=train_size, eval_size=eval_size, seed=seed, sampling=sampling,
+        min_opponent_rate=min_opponent_rate, max_opponent_rate=max_opponent_rate,
     )
 
     rubric = vf.Rubric(
         funcs=[
-            game_reward, efficiency_reward, shot_calling_reward,
+            game_reward,
             cluegiver_format_reward, guesser_format_reward, length_penalty,
+            # metrics (weight 0.0)
+            efficiency_reward, shot_calling_reward,
             assassin_metric, blue_hit_metric, red_found_metric, shots_hit_metric,
             rounds_metric, win_metric, opponent_win_metric, avg_clue_number_metric,
         ],
-        weights=[1.0, efficiency_weight, 0.3, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        weights=[game_reward_weight, 0.1, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         parser=parser,
     )
 
