@@ -698,13 +698,17 @@ async def avg_clue_number_metric(state: dict[str, Any], **kwargs: Any) -> float:
 
 
 async def length_penalty(state: dict[str, Any], **kwargs: Any) -> float:
-    """Penalize excessively long outputs to prevent verbose collapse."""
+    """Hard cliff penalty for excessively long outputs.
+
+    Returns 0.0 below threshold, -1.0 above. No smooth gradient —
+    prevents the model from learning "shorter is always better" which
+    causes collapse toward producing nothing.
+    """
     cluegiver_text = state.get("cluegiver_output", "")
     guesser_text = state.get("guesser_output", "")
     longest = max(len(cluegiver_text), len(guesser_text))
-    char_threshold = 2000
-    if longest > char_threshold:
-        return -1.0 * min(1.0, (longest - char_threshold) / 2000)
+    if longest > 2000:
+        return -1.0
     return 0.0
 
 
