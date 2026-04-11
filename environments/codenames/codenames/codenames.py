@@ -135,32 +135,42 @@ def parse_guesses(
 # ---------------------------------------------------------------------------
 
 
+OPPONENT_LABELS = {0: "no_opponent", 1: "easy", 2: "medium", 3: "hard"}
+
+
 def _build_dataset(
     train_size: int, eval_size: int, seed: int,
     sampling: BoardSamplingConfig,
-    min_opponent_rate: int = 0,
-    max_opponent_rate: int = 0,
+    opponent_rates: list[int] | None = None,
 ) -> tuple[Dataset, Dataset]:
-    train_rows = [_make_row(seed + index, "train", sampling=sampling, min_opp=min_opponent_rate, max_opp=max_opponent_rate) for index in range(train_size)]
-    eval_rows = [_make_row(seed + train_size + index, "eval", sampling=sampling, min_opp=min_opponent_rate, max_opp=max_opponent_rate) for index in range(eval_size)]
+    if not opponent_rates:
+        opponent_rates = [0]
+    # Build rows round-robin across opponent rates so each rate gets equal share
+    train_rows = []
+    for index in range(train_size):
+        rate = opponent_rates[index % len(opponent_rates)]
+        train_rows.append(_make_row(seed + index, sampling=sampling, opponent_rate=rate))
+    eval_rows = []
+    for index in range(eval_size):
+        rate = opponent_rates[index % len(opponent_rates)]
+        eval_rows.append(_make_row(seed + train_size + index, sampling=sampling, opponent_rate=rate))
     return Dataset.from_list(train_rows), Dataset.from_list(eval_rows)
 
 
-def _make_row(seed: int, split: str, sampling: BoardSamplingConfig, min_opp: int = 0, max_opp: int = 0) -> dict[str, Any]:
+def _make_row(seed: int, sampling: BoardSamplingConfig, opponent_rate: int = 0) -> dict[str, Any]:
     rng = Random(seed)
     config = sampling.sample(rng)
     board = create_board(rng=rng, config=config)
-    opponent_rate = rng.randint(min_opp, max_opp) if max_opp > 0 else 0
+    task = OPPONENT_LABELS.get(opponent_rate, f"opp_{opponent_rate}")
     info: dict[str, Any] = {
         "seed": seed,
-        "split": split,
         "words": board.words,
         "key_grid": board.key_grid,
         "board_config": config.to_dict(),
         "opponent_rate": opponent_rate,
     }
     prompt = [{"role": "user", "content": f"Current board:\n{format_board_for_cluegiver(board)}"}]
-    return {"prompt": prompt, "info": info, "answer": "", "task": split}
+    return {"prompt": prompt, "info": info, "answer": "", "task": task}
 
 
 def _validate_clue(word: str, board: BoardState) -> str:
@@ -739,8 +749,7 @@ def load_environment(
     min_red_ratio: float = 0.3,
     max_red_ratio: float = 0.6,
     opponent_guesses_per_turn: int = 0,
-    min_opponent_rate: int = 0,
-    max_opponent_rate: int = 0,
+    opponent_rates: list[int] | None = None,
     game_reward_weight: float = 1.0,
     reward_mode: str = "convex",
     **kwargs: Any,
@@ -753,7 +762,7 @@ def load_environment(
     )
     dataset, eval_dataset = _build_dataset(
         train_size=train_size, eval_size=eval_size, seed=seed, sampling=sampling,
-        min_opponent_rate=min_opponent_rate, max_opponent_rate=max_opponent_rate,
+        opponent_rates=opponent_rates,
     )
 
     game_reward = game_reward_convex if reward_mode == "convex" else game_reward_binary
