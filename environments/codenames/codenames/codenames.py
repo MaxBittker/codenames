@@ -606,15 +606,8 @@ async def guesser_format_reward(state: dict[str, Any], **kwargs: Any) -> float:
     return 1.0 if parsed.guesses else 0.0
 
 
-async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
-    """Race reward with convex (squared) progress curve.
-
-    reward = (reds_found / num_red)^2 - (opponent_blues_found / num_blue)
-    Assassin hit: -1.0
-
-    Squaring our progress makes each additional red worth more than the last,
-    pulling the model toward finishing rather than accumulating safely.
-    """
+async def game_reward_convex(state: dict[str, Any], **kwargs: Any) -> float:
+    """Race reward with convex (squared) progress curve."""
     if state.get("assassin_hit", False):
         return -1.0
     num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
@@ -622,6 +615,23 @@ async def game_reward(state: dict[str, Any], **kwargs: Any) -> float:
     our_progress = (state.get("total_red_found", 0) / max(1, num_red)) ** 2
     opponent_progress = state.get("opponent_blues_found", 0) / max(1, num_blue)
     return our_progress - opponent_progress
+
+
+async def game_reward_binary(state: dict[str, Any], **kwargs: Any) -> float:
+    """Near-binary reward: 1.0 for win, -1.0 for assassin, tiny shaping on loss.
+
+    The 0.1x shaping on losses gives GRPO some early gradient while keeping
+    the gap between winning (1.0) and best possible loss (0.1) massive.
+    """
+    if state.get("assassin_hit", False):
+        return -1.0
+    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+    board = BoardState.from_dict(state["board"])
+    red_remaining = count_remaining(board, "Red")
+    if red_remaining == 0 and not state.get("opponent_won", False):
+        return 1.0  # we won the race
+    # lost — tiny partial credit
+    return (state.get("total_red_found", 0) / max(1, num_red)) * 0.1
 
 
 async def efficiency_reward(state: dict[str, Any], **kwargs: Any) -> float:
@@ -732,6 +742,7 @@ def load_environment(
     min_opponent_rate: int = 0,
     max_opponent_rate: int = 0,
     game_reward_weight: float = 1.0,
+    reward_mode: str = "convex",
     **kwargs: Any,
 ) -> vf.Environment:
     sampling = BoardSamplingConfig(
@@ -745,6 +756,11 @@ def load_environment(
         min_opponent_rate=min_opponent_rate, max_opponent_rate=max_opponent_rate,
     )
 
+    game_reward = game_reward_convex if reward_mode == "convex" else game_reward_binary
+    # Binary mode: no auxiliary rewards, game signal only
+    format_weight = 0.1 if reward_mode == "convex" else 0.0
+    length_weight = 0.1 if reward_mode == "convex" else 0.0
+
     rubric = vf.Rubric(
         funcs=[
             game_reward,
@@ -754,7 +770,7 @@ def load_environment(
             assassin_metric, blue_hit_metric, red_found_metric, shots_hit_metric,
             rounds_metric, win_metric, opponent_win_metric, avg_clue_number_metric,
         ],
-        weights=[game_reward_weight, 0.1, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        weights=[game_reward_weight, format_weight, format_weight, length_weight, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         parser=parser,
     )
 
