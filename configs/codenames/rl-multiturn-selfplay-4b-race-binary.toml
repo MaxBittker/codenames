@@ -9,7 +9,7 @@ max_tokens = 2048
 
 [[env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, self_play = true, opponent_rates = [1, 2, 3], game_reward_weight = 1.0, reward_mode = "binary" }
+args = { train_size = 100000, eval_size = 500, self_play = true, min_opponent_rate = 0.5, max_opponent_rate = 3.0, game_reward_weight = 1.0, reward_mode = "binary" }
 
 [eval]
 interval = 25
@@ -18,11 +18,11 @@ rollouts_per_example = 4
 
 [[eval.env]]
 id = "maxbittker/codenames"
-args = { train_size = 100000, eval_size = 500, self_play = true, opponent_rates = [1, 2, 3], game_reward_weight = 1.0, reward_mode = "binary" }
+args = { train_size = 100000, eval_size = 500, self_play = true, min_opponent_rate = 0.5, max_opponent_rate = 3.0, game_reward_weight = 1.0, reward_mode = "binary" }
 
 [wandb]
 project = "codenames"
-name = "multiturn-4b-binary-nopitter"
+name = "multiturn-4b-binary-nopitter-fuzz"
 entity = "maxbittker-websim"
 
 [checkpoints]

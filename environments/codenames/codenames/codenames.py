@@ -135,33 +135,48 @@ def parse_guesses(
 # ---------------------------------------------------------------------------
 
 
-OPPONENT_LABELS = {0: "no_opponent", 1: "easy", 2: "medium", 3: "hard"}
+def _opponent_label(rate: float) -> str:
+    if rate == 0:
+        return "no_opponent"
+    if rate <= 1.0:
+        return "easy"
+    if rate <= 2.0:
+        return "medium"
+    return "hard"
 
 
 def _build_dataset(
     train_size: int, eval_size: int, seed: int,
     sampling: BoardSamplingConfig,
     opponent_rates: list[int] | None = None,
+    min_opponent_rate: float = 0.0,
+    max_opponent_rate: float = 0.0,
 ) -> tuple[Dataset, Dataset]:
-    if not opponent_rates:
-        opponent_rates = [0]
-    # Build rows round-robin across opponent rates so each rate gets equal share
-    train_rows = []
-    for index in range(train_size):
-        rate = opponent_rates[index % len(opponent_rates)]
-        train_rows.append(_make_row(seed + index, sampling=sampling, opponent_rate=rate))
-    eval_rows = []
-    for index in range(eval_size):
-        rate = opponent_rates[index % len(opponent_rates)]
-        eval_rows.append(_make_row(seed + train_size + index, sampling=sampling, opponent_rate=rate))
+    train_rows = [_make_row(seed + i, sampling=sampling,
+                            opponent_rates=opponent_rates,
+                            min_opp=min_opponent_rate, max_opp=max_opponent_rate)
+                  for i in range(train_size)]
+    eval_rows = [_make_row(seed + train_size + i, sampling=sampling,
+                           opponent_rates=opponent_rates,
+                           min_opp=min_opponent_rate, max_opp=max_opponent_rate)
+                 for i in range(eval_size)]
     return Dataset.from_list(train_rows), Dataset.from_list(eval_rows)
 
 
-def _make_row(seed: int, sampling: BoardSamplingConfig, opponent_rate: int = 0) -> dict[str, Any]:
+def _make_row(seed: int, sampling: BoardSamplingConfig,
+              opponent_rates: list[int] | None = None,
+              min_opp: float = 0.0, max_opp: float = 0.0) -> dict[str, Any]:
     rng = Random(seed)
     config = sampling.sample(rng)
     board = create_board(rng=rng, config=config)
-    task = OPPONENT_LABELS.get(opponent_rate, f"opp_{opponent_rate}")
+    # Determine opponent rate: use discrete list if provided, else sample from continuous range
+    if opponent_rates:
+        opponent_rate = float(opponent_rates[seed % len(opponent_rates)])
+    elif max_opp > 0:
+        opponent_rate = rng.uniform(min_opp, max_opp)
+    else:
+        opponent_rate = 0.0
+    task = _opponent_label(opponent_rate)
     info: dict[str, Any] = {
         "seed": seed,
         "words": board.words,
@@ -477,10 +492,16 @@ class CodenamesEnv(MultiAgentEnv):
             return
 
         # Simulate opponent turn: they find N blue words per round
+        # Float rates: integer part is guaranteed, fractional part is probability of +1
         opponent_rate = state.get("opponent_rate", self.opponent_guesses_per_turn)
         if opponent_rate > 0:
             blue_remaining = count_remaining(board, "Blue")
-            opponent_finds = min(opponent_rate, blue_remaining)
+            guaranteed = int(opponent_rate)
+            frac = opponent_rate - guaranteed
+            # Use a deterministic RNG seeded on game seed + round for reproducibility
+            opp_rng = Random(state.get("info", {}).get("seed", 0) + len(state.get("round_history", [])))
+            extra = 1 if frac > 0 and opp_rng.random() < frac else 0
+            opponent_finds = min(guaranteed + extra, blue_remaining)
             # Reveal blue words from the board (opponent "guesses" them)
             found = 0
             for i, (color, revealed) in enumerate(zip(board.key_grid, board.revealed)):
@@ -777,6 +798,8 @@ def load_environment(
     max_red_ratio: float = 0.6,
     opponent_guesses_per_turn: int = 0,
     opponent_rates: list[int] | None = None,
+    min_opponent_rate: float = 0.0,
+    max_opponent_rate: float = 0.0,
     game_reward_weight: float = 1.0,
     reward_mode: str = "convex",
     **kwargs: Any,
@@ -790,6 +813,7 @@ def load_environment(
     dataset, eval_dataset = _build_dataset(
         train_size=train_size, eval_size=eval_size, seed=seed, sampling=sampling,
         opponent_rates=opponent_rates,
+        min_opponent_rate=min_opponent_rate, max_opponent_rate=max_opponent_rate,
     )
 
     game_reward = game_reward_convex if reward_mode == "convex" else game_reward_binary
