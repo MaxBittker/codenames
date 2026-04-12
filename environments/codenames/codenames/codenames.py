@@ -676,6 +676,33 @@ async def shot_calling_reward(state: dict[str, Any], **kwargs: Any) -> float:
     return total_shots_hit / num_red
 
 
+async def single_clue_penalty(state: dict[str, Any], **kwargs: Any) -> float:
+    """Penalize clue_number=1 when multiple reds remain.
+
+    Returns -1.0 for each round where clue_number was 1 but more than 1 red
+    remained. No penalty if only 1 red was left (legitimate single clue).
+    Returns 0.0 if no rounds played.
+    """
+    rounds = state.get("round_history", [])
+    if not rounds:
+        return 0.0
+    num_red = state.get("info", {}).get("board_config", {}).get("num_red", 4)
+    bad_rounds = 0
+    reds_found_so_far = 0
+    for rnd in rounds:
+        reds_remaining = num_red - reds_found_so_far
+        if rnd["clue"]["number"] == 1 and reds_remaining > 1:
+            bad_rounds += 1
+        # Count reds found this round
+        for r in rnd["results"]:
+            if hasattr(r, "type"):
+                if r.type == "correct":
+                    reds_found_so_far += 1
+            elif isinstance(r, dict) and r.get("type") == "correct":
+                reds_found_so_far += 1
+    return -1.0 * bad_rounds / max(1, len(rounds))
+
+
 async def assassin_metric(state: dict[str, Any], **kwargs: Any) -> float:
     return 1.0 if state.get("assassin_hit", False) else 0.0
 
@@ -769,17 +796,18 @@ def load_environment(
     # Binary mode: no auxiliary rewards, game signal only
     format_weight = 0.1 if reward_mode == "convex" else 0.0
     length_weight = 0.1 if reward_mode == "convex" else 0.0
+    single_clue_weight = 0.3
 
     rubric = vf.Rubric(
         funcs=[
-            game_reward,
+            game_reward, single_clue_penalty,
             cluegiver_format_reward, guesser_format_reward, length_penalty,
             # metrics (weight 0.0)
             efficiency_reward, shot_calling_reward,
             assassin_metric, blue_hit_metric, red_found_metric, shots_hit_metric,
             rounds_metric, win_metric, opponent_win_metric, avg_clue_number_metric,
         ],
-        weights=[game_reward_weight, format_weight, format_weight, length_weight, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        weights=[game_reward_weight, single_clue_weight, format_weight, format_weight, length_weight, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         parser=parser,
     )
 

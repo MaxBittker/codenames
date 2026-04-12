@@ -22,7 +22,7 @@ args = { train_size = 100000, eval_size = 500, self_play = true, opponent_rates 
 
 [wandb]
 project = "codenames"
-name = "multiturn-4b-binary-curriculum-v1"
+name = "multiturn-4b-binary-curriculum-nopitter"
 entity = "maxbittker-websim"
 
 [checkpoints]
